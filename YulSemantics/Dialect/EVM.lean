@@ -227,6 +227,14 @@ def parse : Ident → Option Op
   | "stop" => some .stop | "return" => some .ret | "revert" => some .revert | "invalid" => some .invalid
   | _ => none
 
+/-- Smart constructor for a call in source: resolve the name to a built-in if it is one, otherwise
+treat it as a user-defined function call. Used by the DSL (`YulSemantics.Syntax`). For a literal
+built-in name this reduces to `Expr.builtin op args` definitionally. -/
+def mkCall (name : Ident) (args : List (Expr Op)) : Expr Op :=
+  match parse name with
+  | some op => .builtin op args
+  | none    => .call name args
+
 /-- The gas-free EVM reference dialect. -/
 def evm : Dialect where
   Op       := Op
