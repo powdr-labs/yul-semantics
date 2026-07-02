@@ -262,7 +262,18 @@ the equivalence/simulation results above.
   `Interp.adequacy` / `Interp.run_adequacy`, instantiated hypothesis-free for EVM as
   `EVM.run_adequacy`. With determinism, the interpreter is pinned down as *the* computational
   content of the semantics.
-- **Phase 5 is next** — optimization meta-theory (behavior, contextual equivalence, congruence).
+- **Phase 5** — optimization meta-theory. *(first cut done — `YulSemantics/Equiv.lean`,
+  `YulSemantics/Rewrites.lean`)*. Pointwise semantic equivalences for all five syntactic classes
+  (`EquivExpr`/`EquivArgs`/`EquivStmt`/`EquivStmts`/`EquivBlock`, each an equivalence relation);
+  behavior (`EquivBlock.run_iff`); **congruence lemmas** for built-in/user calls (argument lists via
+  `Forall₂`), `let`/`assign`/`exprStmt`/`cond`/`switch` (labels + case blocks + default) /`forLoop`
+  (cond/post/body), sequences, and blocks. Two honest hoisting-induced side conditions, documented
+  in the module: block congruence needs `hoist`-agreement (`rfl` for non-`funDef` rewrites), and
+  `funDef`-body congruence is deferred to the function-environment relation that inlining will need.
+  Validated by sample EVM rewrites: constant folding `add(2,3) ≈ 5`, the identity `add(x,0) ≈ x`
+  (stated for a *variable* — `add(e,0) ≈ e` is false for multi-valued `e`, a real optimizer
+  precondition surfaced by the proofs), and the identity lifted through congruence to
+  `sstore(0, add(x,0)) ≈ sstore(0, x)` at statement and whole-program (DSL) level.
 
 ## Dependencies
 

@@ -8,5 +8,7 @@ import YulSemantics.BigStep
 import YulSemantics.Determinism
 import YulSemantics.Interp
 import YulSemantics.Adequacy
+import YulSemantics.Equiv
+import YulSemantics.Rewrites
 import YulSemantics.Syntax
 import YulSemantics.Examples
