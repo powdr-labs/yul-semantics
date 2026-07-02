@@ -125,4 +125,15 @@ example :
     (Interp.run EVM.exec 1000 sumProgram EvmState.init).map (fun r => loadWord r.2.1.memory 0)
       = .ok 45 := by native_decide
 
+/-- Environment built-ins work end-to-end: `caller()` reads the execution environment. -/
+example :
+    (Interp.run EVM.exec 100 (yul% { sstore(0, caller()) })
+        { EvmState.init with env := { EvmState.init.env with caller := 0xabc } }).map
+      (·.2.1.storage 0) = .ok 0xabc := by native_decide
+
+/-- `clz` (EIP-7939, Fusaka): the word `1` has 255 leading zeros. -/
+example :
+    (Interp.run EVM.exec 100 (yul% { sstore(0, clz(1)) }) EvmState.init).map (·.2.1.storage 0)
+      = .ok 255 := by native_decide
+
 end YulSemantics.Examples
