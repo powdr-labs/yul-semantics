@@ -36,9 +36,11 @@ meta-theory (logic soundness, compiler simulation), models non-determinism nativ
 we prove the interpreter equivalent to it if/when we build one — its "silent ill-formedness" risk
 is caught by that very equivalence proof (a missing rule makes adequacy unprovable).
 
-An **executable fuel-indexed interpreter is optional and deferred.** If built later it becomes a
-*derived* view, proven sound (and, for terminating runs, complete) against the relation. It is not
-needed for any correctness result.
+An **executable fuel-indexed interpreter** is a *derived* view (`YulSemantics/Interp.lean`), built
+over an `ExecDialect` (a `Dialect` plus a computable `builtinFn`). It is not itself a correctness
+foundation; **adequacy** — `interp` ⇔ `BigStep` (sound always, complete for terminating runs) — is
+the pending proof that ties it to the ground truth. It already lets us *run* programs end-to-end
+(see the `native_decide` tests in `YulSemantics/Examples.lean`).
 
 ### 3. The semantics is parameterized over an abstract `Dialect`
 
@@ -237,9 +239,12 @@ the equivalence/simulation results above.
   still TODO**)*
 - **Phase 4** — Concrete-syntax DSL (Yul syntax → AST). *(done — `YulSemantics/Syntax.lean`;
   `yul% { … }` → `Block EVM.Op`, round-trip-tested in `YulSemantics/Examples.lean`)*
+- **Interpreter** — total fuel-indexed executable interpreter over an `ExecDialect`. *(done —
+  `YulSemantics/Interp.lean`; runs programs in `Examples.lean` via `native_decide`)*
 - **Phase 5** — Meta-theory foundations: behavior/observation, contextual equivalence + congruence
-  lemma, sample local-rewrite equivalences validating the framework. *(next)*
-- **Remaining from Phase 3** — the determinism lemma.
+  lemma, sample local-rewrite equivalences validating the framework.
+- **Pending proofs** — interpreter **adequacy** (`interp` ⇔ `BigStep`) and the **determinism**
+  lemma. *(next)*
 
 ## Dependencies
 

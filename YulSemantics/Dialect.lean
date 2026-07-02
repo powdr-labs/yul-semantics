@@ -128,4 +128,12 @@ structure EffectsSound : Prop where
 
 end Dialect
 
+/-- A dialect equipped with an *executable* built-in evaluator, for the fuel-indexed interpreter
+(`YulSemantics.Interp`). The interpreter needs a function; the ground-truth `Dialect.Builtin` is a
+relation (to allow future non-determinism). For deterministic dialects the two agree — that
+agreement is proved as part of interpreter adequacy (TODO), not required here. -/
+structure ExecDialect extends Dialect where
+  /-- Executable built-in evaluation; `none` on an arity mismatch (a stuck call). -/
+  builtinFn : Op → List Value → State → Option (BuiltinResult Value State)
+
 end YulSemantics
