@@ -136,4 +136,20 @@ structure ExecDialect extends Dialect where
   /-- Executable built-in evaluation; `none` on an arity mismatch (a stuck call). -/
   builtinFn : Op → List Value → State → Option (BuiltinResult Value State)
 
+/-- The executable evaluator agrees *exactly* with the relational interpretation. This is the
+hypothesis under which the interpreter is adequate for the big-step semantics
+(`YulSemantics.Adequacy`). For the EVM dialect it holds definitionally (`Builtin` is defined from
+`stepOp`). -/
+def ExecDialect.Lawful (E : ExecDialect) : Prop :=
+  ∀ op args st r, E.Builtin op args st r ↔ E.builtinFn op args st = some r
+
+/-- A lawful executable dialect has deterministic built-ins (its `Builtin` is the graph of a
+function). -/
+theorem ExecDialect.Lawful.deterministic {E : ExecDialect} (hE : E.Lawful)
+    (op : E.toDialect.Op) : E.toDialect.Deterministic op := by
+  intro args st r₁ r₂ h₁ h₂
+  rw [hE] at h₁ h₂
+  rw [h₁] at h₂
+  exact Option.some.inj h₂
+
 end YulSemantics

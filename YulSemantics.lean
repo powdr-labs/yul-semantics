@@ -7,5 +7,6 @@ import YulSemantics.Dialect.EVM
 import YulSemantics.BigStep
 import YulSemantics.Determinism
 import YulSemantics.Interp
+import YulSemantics.Adequacy
 import YulSemantics.Syntax
 import YulSemantics.Examples
