@@ -252,6 +252,10 @@ to the concrete `Value := BitVec 256` / `State := EvmState`. -/
 `builtinFn := stepOp` agrees with it by construction. `@[reducible]` for the same reason as `evm`. -/
 @[reducible] def exec : ExecDialect := { toDialect := evm, builtinFn := stepOp }
 
+/-- The EVM executable dialect is lawful: `Builtin` and `builtinFn` agree definitionally (both are
+`stepOp`). -/
+theorem exec_lawful : exec.Lawful := fun _ _ _ _ => Iff.rfl
+
 /-! ### Smoke tests — structural dispatch reduces cleanly (no `maxRecDepth` gymnastics). -/
 
 example (x : U256) (st : EvmState) : stepOp .add [x, 0] st = some (.ok [x] st) := by simp [stepOp, bin]

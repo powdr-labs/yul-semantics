@@ -4,9 +4,10 @@ import YulSemantics.BigStep
 # YulSemantics.Interp
 
 A total, fuel-indexed **executable interpreter** over an `ExecDialect`. It mirrors the big-step
-relation of `YulSemantics.BigStep`, which remains the ground truth (`DESIGN.md` §2); the interpreter
-is a derived, runnable view. Adequacy (`interp` ⇔ `BigStep`) and the determinism lemma are proved
-separately (TODO).
+judgment of `YulSemantics.BigStep`, which remains the ground truth (`DESIGN.md` §2); the interpreter
+is a derived, runnable view, proven **adequate** (sound and complete) for the judgment in
+`YulSemantics.Adequacy`, under the `ExecDialect.Lawful` hypothesis (definitional for the EVM
+dialect). Determinism of the judgment is proven in `YulSemantics.Determinism`.
 
 Fuel bounds *all* recursion (not just calls/loops), so a terminating program is interpreted for
 some sufficiently large fuel — the natural "∃ fuel" adequacy statement. `Result` distinguishes a
@@ -43,6 +44,13 @@ namespace Result
 instance : Monad Result where
   pure := .ok
   bind := Result.bind
+
+@[simp] theorem ok_bind {α β : Type} (a : α) (f : α → Result β) :
+    (Result.ok a >>= f) = f a := rfl
+@[simp] theorem stuck_bind {α β : Type} (f : α → Result β) :
+    ((Result.stuck : Result α) >>= f) = Result.stuck := rfl
+@[simp] theorem outOfFuel_bind {α β : Type} (f : α → Result β) :
+    ((Result.outOfFuel : Result α) >>= f) = Result.outOfFuel := rfl
 
 end Result
 

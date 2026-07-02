@@ -254,7 +254,15 @@ the equivalence/simulation results above.
   recursion over them, so the single-judgment encoding is what makes this (and every future
   derivation induction: adequacy, compiler simulation) a standard tactic proof. The five relation
   names survive as abbreviations with unchanged signatures.
-- **Pending proofs** — interpreter **adequacy** (`interp` ⇔ `BigStep`). *(next)*
+- **Adequacy** — *(done — `YulSemantics/Adequacy.lean`)*. Under `ExecDialect.Lawful` (the executable
+  `builtinFn` agrees exactly with the relational `Builtin`; definitional for the EVM dialect):
+  **soundness** (interpreter `.ok` at any fuel ⇒ derivation; induction on fuel) and **completeness**
+  (derivation ⇒ interpreter `.ok` at every sufficiently large fuel; rule induction — the
+  `∀ n ≥ N` form embeds fuel monotonicity, so no separate monotonicity lemma). Combined as
+  `Interp.adequacy` / `Interp.run_adequacy`, instantiated hypothesis-free for EVM as
+  `EVM.run_adequacy`. With determinism, the interpreter is pinned down as *the* computational
+  content of the semantics.
+- **Phase 5 is next** — optimization meta-theory (behavior, contextual equivalence, congruence).
 
 ## Dependencies
 
