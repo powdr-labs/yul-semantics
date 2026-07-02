@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Only keep the latest run per branch/PR going.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # lean-action installs the toolchain pinned in `lean-toolchain`, fetches the prebuilt Mathlib
+      # olean cache (so Mathlib is not recompiled from source), and runs `lake build` — which also
+      # type-checks every `example`/`def` in the library, including the DSL round-trips and the
+      # big-step smoke tests.
+      - name: Build (fetch Mathlib cache + lake build)
+        uses: leanprover/lean-action@v1
+        with:
+          use-mathlib-cache: "true"
+          build: "true"
+          test: "false"
+          lint: "false"
