@@ -1,6 +1,10 @@
 name = "yul-semantics"
 version = "0.1.0"
-defaultTargets = ["yul-semantics"]
+# Only the library is a default target: building the `yul-semantics` exe (a placeholder) would
+# compile + link native object code for every transitively imported Mathlib module (~8500 `:c.o`
+# clang jobs), which the Mathlib cache does not ship — that dominates CI time. Build the exe
+# explicitly with `lake build yul-semantics` if needed.
+defaultTargets = ["YulSemantics"]
 
 [[require]]
 name = "mathlib"
