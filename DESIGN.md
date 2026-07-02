@@ -274,6 +274,16 @@ the equivalence/simulation results above.
   (stated for a *variable* — `add(e,0) ≈ e` is false for multi-valued `e`, a real optimizer
   precondition surfaced by the proofs), and the identity lifted through congruence to
   `sstore(0, add(x,0)) ≈ sstore(0, x)` at statement and whole-program (DSL) level.
+- **Optimizer skeleton** — *(done — `YulSemantics/Optimizer.lean`, `YulSemantics/Passes.lean`)*.
+  `CorrectPass` (transformation + block-equivalence proof) with correct-by-construction
+  `comp`/`pipeline`/`iterate` and the behavioral corollary `run_iff`; `RuleSound` local rewrite
+  rules; a generic bottom-up rewriter with a single **engine theorem** (`rewriteBlock_sound`) so a
+  verified peephole pass costs exactly one `EquivExpr` lemma (`CorrectPass.ofRule`). First verified
+  pass: **constant folding** for EVM (`Passes.constantFolding`: folds `add` of literals, general
+  `litValue_add`, plus the `add(x,0)→x` identity), demonstrated computing by `rfl` on DSL programs
+  (including under loops) with the run-equivalence for free. Engine v1 does not descend into
+  `funDef` bodies — the gap, its cause, and the proof plan (function-environment relation) are
+  documented in `docs/fundef-congruence-gap.md`.
 
 ## Dependencies
 
