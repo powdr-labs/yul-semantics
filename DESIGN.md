@@ -235,9 +235,11 @@ the equivalence/simulation results above.
   pre-collection, multiple return values, outcome propagation. *(relation done —
   `YulSemantics/BigStep.lean`, smoke-tested in `YulSemantics/Examples.lean`; **determinism lemma
   still TODO**)*
-- **Phase 4** — Concrete-syntax DSL (Yul syntax → AST).
+- **Phase 4** — Concrete-syntax DSL (Yul syntax → AST). *(done — `YulSemantics/Syntax.lean`;
+  `yul% { … }` → `Block EVM.Op`, round-trip-tested in `YulSemantics/Examples.lean`)*
 - **Phase 5** — Meta-theory foundations: behavior/observation, contextual equivalence + congruence
-  lemma, sample local-rewrite equivalences validating the framework.
+  lemma, sample local-rewrite equivalences validating the framework. *(next)*
+- **Remaining from Phase 3** — the determinism lemma.
 
 ## Dependencies
 
