@@ -46,14 +46,6 @@ instance : Monad Result where
 
 end Result
 
-/-- Select the block a `switch` executes: the first case whose label evaluates equal to the scrutinee
-`cv`, else the default (or the empty block when there is neither). -/
-def selectSwitch (D : Dialect) [DecidableEq D.Value] (cv : D.Value)
-    (cases : List (Literal × Block D.Op)) (dflt : Option (Block D.Op)) : Block D.Op :=
-  match cases.find? (fun p => decide (cv = D.litValue p.1)) with
-  | some p => p.2
-  | none   => dflt.getD []
-
 namespace Interp
 
 variable (E : ExecDialect) [DecidableEq E.toDialect.Value]
