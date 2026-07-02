@@ -5,6 +5,7 @@ import YulSemantics.Ast
 import YulSemantics.Dialect
 import YulSemantics.Dialect.EVM
 import YulSemantics.BigStep
+import YulSemantics.Determinism
 import YulSemantics.Interp
 import YulSemantics.Syntax
 import YulSemantics.Examples

@@ -235,16 +235,26 @@ the equivalence/simulation results above.
   (`Value := BitVec 256`). *(done — `YulSemantics/Dialect.lean`, `YulSemantics/Dialect/EVM.lean`)*
 - **Phase 3** — Big-step relational semantics (the ground truth): scoping, block-level function
   pre-collection, multiple return values, outcome propagation. *(relation done —
-  `YulSemantics/BigStep.lean`, smoke-tested in `YulSemantics/Examples.lean`; **determinism lemma
-  still TODO**)*
+  `YulSemantics/BigStep.lean`, smoke-tested in `YulSemantics/Examples.lean`; determinism proven —
+  see below)*
 - **Phase 4** — Concrete-syntax DSL (Yul syntax → AST). *(done — `YulSemantics/Syntax.lean`;
   `yul% { … }` → `Block EVM.Op`, round-trip-tested in `YulSemantics/Examples.lean`)*
 - **Interpreter** — total fuel-indexed executable interpreter over an `ExecDialect`. *(done —
   `YulSemantics/Interp.lean`; runs programs in `Examples.lean` via `native_decide`)*
 - **Phase 5** — Meta-theory foundations: behavior/observation, contextual equivalence + congruence
   lemma, sample local-rewrite equivalences validating the framework.
-- **Pending proofs** — interpreter **adequacy** (`interp` ⇔ `BigStep`) and the **determinism**
-  lemma. *(next)*
+- **Determinism** — *(done — `YulSemantics/Determinism.lean`)*. `Step.det` by a single rule
+  induction, given deterministic built-ins; corollaries for the five conceptual relations and
+  whole-program runs; `EVM.evm_deterministic` discharges the hypothesis for the EVM dialect
+  (`EVM.run_det`). Two design notes baked in along the way: (1) `switch` dispatches through
+  `selectSwitch` (requiring `[DecidableEq D.Value]` on the judgment), making it deterministic by
+  construction; (2) the semantics is encoded as a **single indexed judgment** `Step` over a
+  `Code`/`Res` sum rather than five literal `mutual` relations — Lean's `induction` tactic does not
+  support mutual inductive predicates and the equation compiler cannot compile mutual structural
+  recursion over them, so the single-judgment encoding is what makes this (and every future
+  derivation induction: adequacy, compiler simulation) a standard tactic proof. The five relation
+  names survive as abbreviations with unchanged signatures.
+- **Pending proofs** — interpreter **adequacy** (`interp` ⇔ `BigStep`). *(next)*
 
 ## Dependencies
 

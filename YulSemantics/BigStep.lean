@@ -5,7 +5,23 @@ import YulSemantics.Dialect
 # YulSemantics.BigStep
 
 The **big-step relational semantics** of Yul — the ground truth (see `DESIGN.md` §2). It is an
-inductive evaluation relation over an arbitrary `Dialect D`, gas-free.
+inductive evaluation judgment over an arbitrary `Dialect D`, gas-free.
+
+## Encoding: one judgment, five syntactic classes
+
+Conceptually the semantics is five mutually inductive relations: expression evaluation, argument
+lists, statements, statement sequences, and loop iteration. They are encoded as a **single indexed
+inductive judgment** `Step` over a sum `Code` of the five syntactic classes and a sum `Res` of the
+two result shapes; the five conceptual relations are recovered as abbreviations (`EvalExpr`,
+`EvalArgs`, `ExecStmt`, `ExecStmts`, `ExecLoop`) with their natural signatures, so downstream
+statements read exactly as with a mutual family.
+
+Why not a literal `mutual` family: Lean's `induction` tactic does not support mutually inductive
+predicates (their recursors have one motive per relation), and the equation compiler cannot compile
+mutual structural recursion over them (the premises have constructor-shaped result indices, which
+defeat below-style elimination). With a single inductive, every derivation induction — determinism,
+interpreter adequacy, and eventually the compiler-correctness simulation — is a standard
+`induction … with` proof.
 
 ## Environments
 
@@ -99,206 +115,245 @@ def lookupFun {D : Dialect} : FunEnv D → Ident → Option (FDecl D × FunEnv D
     | some p => some (p.2, scope :: rest)
     | none => lookupFun rest f
 
-/-! ### The evaluation / execution relations -/
+/-- The block a `switch` executes: the first case whose label evaluates equal to the scrutinee `cv`,
+else the default (or the empty block when there is neither). Shared by the semantics and the
+interpreter, so `switch` is deterministic by construction. -/
+def selectSwitch (D : Dialect) [DecidableEq D.Value] (cv : D.Value)
+    (cases : List (Literal × Block D.Op)) (dflt : Option (Block D.Op)) : Block D.Op :=
+  match cases.find? (fun p => decide (cv = D.litValue p.1)) with
+  | some p => p.2
+  | none   => dflt.getD []
 
-mutual
+/-! ### The evaluation judgment -/
 
-/-- Evaluate a single expression to values (a `lit`/`var` yields one; a call may yield several) or a
-halt, threading the machine state. -/
-inductive EvalExpr (D : Dialect) :
-    FunEnv D → VEnv D → D.State → Expr D.Op → EResult D → Prop where
+/-- The five syntactic classes the judgment ranges over. -/
+inductive Code (Op : Type)
+  /-- Evaluate a single expression. -/
+  | expr  (e : Expr Op)
+  /-- Evaluate an argument list (right-to-left). -/
+  | args  (es : List (Expr Op))
+  /-- Execute a single statement. -/
+  | stmt  (s : Stmt Op)
+  /-- Execute a statement sequence. -/
+  | stmts (ss : List (Stmt Op))
+  /-- Execute a `for`-loop's iteration (after its `init` block has run). -/
+  | loop  (c : Expr Op) (post body : Block Op)
+
+/-- The result of a `Step`: expression-class code produces an `EResult`; statement-class code
+produces a variable environment, a state, and an `Outcome`. -/
+inductive Res (D : Dialect)
+  | eres (r : EResult D)
+  | sres (V : VEnv D) (st : D.State) (o : Outcome)
+
+/-- The big-step evaluation judgment: `Step D funs V st code res` holds when `code`, run with
+function environment `funs`, variable environment `V`, and machine state `st`, may produce `res`.
+
+Requires `[DecidableEq D.Value]` so that `switch` can dispatch through `selectSwitch` (a function),
+making it deterministic without a well-formedness side condition. -/
+inductive Step (D : Dialect) [DecidableEq D.Value] :
+    FunEnv D → VEnv D → D.State → Code D.Op → Res D → Prop where
+
+  /- ### Expressions -/
+
   | lit {funs V st l} :
-      EvalExpr D funs V st (.lit l) (.vals [D.litValue l] st)
+      Step D funs V st (.expr (.lit l)) (.eres (.vals [D.litValue l] st))
   | var {funs V st x v} :
       VEnv.get V x = some v →
-      EvalExpr D funs V st (.var x) (.vals [v] st)
+      Step D funs V st (.expr (.var x)) (.eres (.vals [v] st))
   | builtinOk {funs V st op args argvals st1 rets st2} :
-      EvalArgs D funs V st args (.vals argvals st1) →
+      Step D funs V st (.args args) (.eres (.vals argvals st1)) →
       D.Builtin op argvals st1 (.ok rets st2) →
-      EvalExpr D funs V st (.builtin op args) (.vals rets st2)
+      Step D funs V st (.expr (.builtin op args)) (.eres (.vals rets st2))
   | builtinHalt {funs V st op args argvals st1 st2} :
-      EvalArgs D funs V st args (.vals argvals st1) →
+      Step D funs V st (.args args) (.eres (.vals argvals st1)) →
       D.Builtin op argvals st1 (.halt st2) →
-      EvalExpr D funs V st (.builtin op args) (.halt st2)
+      Step D funs V st (.expr (.builtin op args)) (.eres (.halt st2))
   | builtinArgsHalt {funs V st op args st1} :
-      EvalArgs D funs V st args (.halt st1) →
-      EvalExpr D funs V st (.builtin op args) (.halt st1)
+      Step D funs V st (.args args) (.eres (.halt st1)) →
+      Step D funs V st (.expr (.builtin op args)) (.eres (.halt st1))
   | callOk {funs V st fn args argvals st1 decl cenv Vend st2 o} :
-      EvalArgs D funs V st args (.vals argvals st1) →
+      Step D funs V st (.args args) (.eres (.vals argvals st1)) →
       lookupFun funs fn = some (decl, cenv) →
       argvals.length = decl.params.length →
-      ExecStmt D cenv ((decl.params.zip argvals) ++ bindZeros D decl.rets) st1
-        (.block decl.body) Vend st2 o →
+      Step D cenv ((decl.params.zip argvals) ++ bindZeros D decl.rets) st1
+        (.stmt (.block decl.body)) (.sres Vend st2 o) →
       (o = .normal ∨ o = .leave) →
-      EvalExpr D funs V st (.call fn args)
-        (.vals (decl.rets.map (fun r => (VEnv.get Vend r).getD D.zero)) st2)
+      Step D funs V st (.expr (.call fn args))
+        (.eres (.vals (decl.rets.map (fun r => (VEnv.get Vend r).getD D.zero)) st2))
   | callHalt {funs V st fn args argvals st1 decl cenv Vend st2} :
-      EvalArgs D funs V st args (.vals argvals st1) →
+      Step D funs V st (.args args) (.eres (.vals argvals st1)) →
       lookupFun funs fn = some (decl, cenv) →
       argvals.length = decl.params.length →
-      ExecStmt D cenv ((decl.params.zip argvals) ++ bindZeros D decl.rets) st1
-        (.block decl.body) Vend st2 .halt →
-      EvalExpr D funs V st (.call fn args) (.halt st2)
+      Step D cenv ((decl.params.zip argvals) ++ bindZeros D decl.rets) st1
+        (.stmt (.block decl.body)) (.sres Vend st2 .halt) →
+      Step D funs V st (.expr (.call fn args)) (.eres (.halt st2))
   | callArgsHalt {funs V st fn args st1} :
-      EvalArgs D funs V st args (.halt st1) →
-      EvalExpr D funs V st (.call fn args) (.halt st1)
+      Step D funs V st (.args args) (.eres (.halt st1)) →
+      Step D funs V st (.expr (.call fn args)) (.eres (.halt st1))
 
-/-- Evaluate an argument list right-to-left (each argument must be single-valued); collect the
-values in source order. -/
-inductive EvalArgs (D : Dialect) :
-    FunEnv D → VEnv D → D.State → List (Expr D.Op) → EResult D → Prop where
-  | nil {funs V st} :
-      EvalArgs D funs V st [] (.vals [] st)
-  | cons {funs V st e rest restvals st1 v st2} :
-      EvalArgs D funs V st rest (.vals restvals st1) →
-      EvalExpr D funs V st1 e (.vals [v] st2) →
-      EvalArgs D funs V st (e :: rest) (.vals (v :: restvals) st2)
-  | consRestHalt {funs V st e rest st1} :
-      EvalArgs D funs V st rest (.halt st1) →
-      EvalArgs D funs V st (e :: rest) (.halt st1)
-  | consHeadHalt {funs V st e rest restvals st1 st2} :
-      EvalArgs D funs V st rest (.vals restvals st1) →
-      EvalExpr D funs V st1 e (.halt st2) →
-      EvalArgs D funs V st (e :: rest) (.halt st2)
+  /- ### Argument lists (evaluated right-to-left; values collected in source order) -/
 
-/-- Execute a single statement, threading the variable environment, state, and outcome. -/
-inductive ExecStmt (D : Dialect) :
-    FunEnv D → VEnv D → D.State → Stmt D.Op → VEnv D → D.State → Outcome → Prop where
+  | argsNil {funs V st} :
+      Step D funs V st (.args []) (.eres (.vals [] st))
+  | argsCons {funs V st e rest restvals st1 v st2} :
+      Step D funs V st (.args rest) (.eres (.vals restvals st1)) →
+      Step D funs V st1 (.expr e) (.eres (.vals [v] st2)) →
+      Step D funs V st (.args (e :: rest)) (.eres (.vals (v :: restvals) st2))
+  | argsRestHalt {funs V st e rest st1} :
+      Step D funs V st (.args rest) (.eres (.halt st1)) →
+      Step D funs V st (.args (e :: rest)) (.eres (.halt st1))
+  | argsHeadHalt {funs V st e rest restvals st1 st2} :
+      Step D funs V st (.args rest) (.eres (.vals restvals st1)) →
+      Step D funs V st1 (.expr e) (.eres (.halt st2)) →
+      Step D funs V st (.args (e :: rest)) (.eres (.halt st2))
+
+  /- ### Statements -/
+
   | funDef {funs V st n ps rs b} :
-      ExecStmt D funs V st (.funDef n ps rs b) V st .normal
+      Step D funs V st (.stmt (.funDef n ps rs b)) (.sres V st .normal)
   | block {funs V st body Vb stb o} :
-      ExecStmts D (hoist D body :: funs) V st body Vb stb o →
-      ExecStmt D funs V st (.block body) (restore V Vb) stb o
+      Step D (hoist D body :: funs) V st (.stmts body) (.sres Vb stb o) →
+      Step D funs V st (.stmt (.block body)) (.sres (restore V Vb) stb o)
   | letZero {funs V st vars} :
-      ExecStmt D funs V st (.letDecl vars none) (bindZeros D vars ++ V) st .normal
+      Step D funs V st (.stmt (.letDecl vars none)) (.sres (bindZeros D vars ++ V) st .normal)
   | letVal {funs V st vars e vals st1} :
-      EvalExpr D funs V st e (.vals vals st1) →
+      Step D funs V st (.expr e) (.eres (.vals vals st1)) →
       vals.length = vars.length →
-      ExecStmt D funs V st (.letDecl vars (some e)) (vars.zip vals ++ V) st1 .normal
+      Step D funs V st (.stmt (.letDecl vars (some e))) (.sres (vars.zip vals ++ V) st1 .normal)
   | letHalt {funs V st vars e st1} :
-      EvalExpr D funs V st e (.halt st1) →
-      ExecStmt D funs V st (.letDecl vars (some e)) V st1 .halt
+      Step D funs V st (.expr e) (.eres (.halt st1)) →
+      Step D funs V st (.stmt (.letDecl vars (some e))) (.sres V st1 .halt)
   | assignVal {funs V st vars e vals st1} :
-      EvalExpr D funs V st e (.vals vals st1) →
+      Step D funs V st (.expr e) (.eres (.vals vals st1)) →
       vals.length = vars.length →
-      ExecStmt D funs V st (.assign vars e) (VEnv.setMany V vars vals) st1 .normal
+      Step D funs V st (.stmt (.assign vars e)) (.sres (VEnv.setMany V vars vals) st1 .normal)
   | assignHalt {funs V st vars e st1} :
-      EvalExpr D funs V st e (.halt st1) →
-      ExecStmt D funs V st (.assign vars e) V st1 .halt
+      Step D funs V st (.expr e) (.eres (.halt st1)) →
+      Step D funs V st (.stmt (.assign vars e)) (.sres V st1 .halt)
   | exprStmt {funs V st e st1} :
-      EvalExpr D funs V st e (.vals [] st1) →
-      ExecStmt D funs V st (.exprStmt e) V st1 .normal
+      Step D funs V st (.expr e) (.eres (.vals [] st1)) →
+      Step D funs V st (.stmt (.exprStmt e)) (.sres V st1 .normal)
   | exprStmtHalt {funs V st e st1} :
-      EvalExpr D funs V st e (.halt st1) →
-      ExecStmt D funs V st (.exprStmt e) V st1 .halt
+      Step D funs V st (.expr e) (.eres (.halt st1)) →
+      Step D funs V st (.stmt (.exprStmt e)) (.sres V st1 .halt)
   | ifTrue {funs V st c body cv st1 V' st2 o} :
-      EvalExpr D funs V st c (.vals [cv] st1) →
+      Step D funs V st (.expr c) (.eres (.vals [cv] st1)) →
       cv ≠ D.zero →
-      ExecStmt D funs V st1 (.block body) V' st2 o →
-      ExecStmt D funs V st (.cond c body) V' st2 o
+      Step D funs V st1 (.stmt (.block body)) (.sres V' st2 o) →
+      Step D funs V st (.stmt (.cond c body)) (.sres V' st2 o)
   | ifFalse {funs V st c body cv st1} :
-      EvalExpr D funs V st c (.vals [cv] st1) →
+      Step D funs V st (.expr c) (.eres (.vals [cv] st1)) →
       cv = D.zero →
-      ExecStmt D funs V st (.cond c body) V st1 .normal
+      Step D funs V st (.stmt (.cond c body)) (.sres V st1 .normal)
   | ifHalt {funs V st c body st1} :
-      EvalExpr D funs V st c (.halt st1) →
-      ExecStmt D funs V st (.cond c body) V st1 .halt
-  | switchCase {funs V st c cases dflt cv st1 l body V' st2 o} :
-      EvalExpr D funs V st c (.vals [cv] st1) →
-      (l, body) ∈ cases →
-      cv = D.litValue l →
-      ExecStmt D funs V st1 (.block body) V' st2 o →
-      ExecStmt D funs V st (.switch c cases dflt) V' st2 o
-  | switchDefault {funs V st c cases dflt cv st1 V' st2 o} :
-      EvalExpr D funs V st c (.vals [cv] st1) →
-      (∀ p ∈ cases, cv ≠ D.litValue p.1) →
-      ExecStmt D funs V st1 (.block (dflt.getD [])) V' st2 o →
-      ExecStmt D funs V st (.switch c cases dflt) V' st2 o
+      Step D funs V st (.expr c) (.eres (.halt st1)) →
+      Step D funs V st (.stmt (.cond c body)) (.sres V st1 .halt)
+  | switchExec {funs V st c cases dflt cv st1 V' st2 o} :
+      Step D funs V st (.expr c) (.eres (.vals [cv] st1)) →
+      Step D funs V st1 (.stmt (.block (selectSwitch D cv cases dflt))) (.sres V' st2 o) →
+      Step D funs V st (.stmt (.switch c cases dflt)) (.sres V' st2 o)
   | switchHalt {funs V st c cases dflt st1} :
-      EvalExpr D funs V st c (.halt st1) →
-      ExecStmt D funs V st (.switch c cases dflt) V st1 .halt
+      Step D funs V st (.expr c) (.eres (.halt st1)) →
+      Step D funs V st (.stmt (.switch c cases dflt)) (.sres V st1 .halt)
   | forLoop {funs V st init c post body Vinit stinit Vend stend o} :
-      ExecStmts D (hoist D init :: funs) V st init Vinit stinit .normal →
-      ExecLoop D (hoist D init :: funs) Vinit stinit c post body Vend stend o →
-      ExecStmt D funs V st (.forLoop init c post body) (restore V Vend) stend o
+      Step D (hoist D init :: funs) V st (.stmts init) (.sres Vinit stinit .normal) →
+      Step D (hoist D init :: funs) Vinit stinit (.loop c post body) (.sres Vend stend o) →
+      Step D funs V st (.stmt (.forLoop init c post body)) (.sres (restore V Vend) stend o)
   | forInitHalt {funs V st init c post body Vinit stinit} :
-      ExecStmts D (hoist D init :: funs) V st init Vinit stinit .halt →
-      ExecStmt D funs V st (.forLoop init c post body) (restore V Vinit) stinit .halt
+      Step D (hoist D init :: funs) V st (.stmts init) (.sres Vinit stinit .halt) →
+      Step D funs V st (.stmt (.forLoop init c post body)) (.sres (restore V Vinit) stinit .halt)
   | «break» {funs V st} :
-      ExecStmt D funs V st .«break» V st .«break»
+      Step D funs V st (.stmt .«break») (.sres V st .«break»)
   | «continue» {funs V st} :
-      ExecStmt D funs V st .«continue» V st .«continue»
+      Step D funs V st (.stmt .«continue») (.sres V st .«continue»)
   | leave {funs V st} :
-      ExecStmt D funs V st .leave V st .leave
+      Step D funs V st (.stmt .leave) (.sres V st .leave)
 
-/-- Execute a statement sequence, threading env/state and short-circuiting on a non-`normal`
-outcome. -/
-inductive ExecStmts (D : Dialect) :
-    FunEnv D → VEnv D → D.State → List (Stmt D.Op) → VEnv D → D.State → Outcome → Prop where
-  | nil {funs V st} :
-      ExecStmts D funs V st [] V st .normal
-  | consNormal {funs V st s rest V1 st1 V2 st2 o} :
-      ExecStmt D funs V st s V1 st1 .normal →
-      ExecStmts D funs V1 st1 rest V2 st2 o →
-      ExecStmts D funs V st (s :: rest) V2 st2 o
-  | consStop {funs V st s rest V1 st1 o} :
-      ExecStmt D funs V st s V1 st1 o →
+  /- ### Statement sequences (short-circuiting on a non-`normal` outcome) -/
+
+  | seqNil {funs V st} :
+      Step D funs V st (.stmts []) (.sres V st .normal)
+  | seqCons {funs V st s rest V1 st1 V2 st2 o} :
+      Step D funs V st (.stmt s) (.sres V1 st1 .normal) →
+      Step D funs V1 st1 (.stmts rest) (.sres V2 st2 o) →
+      Step D funs V st (.stmts (s :: rest)) (.sres V2 st2 o)
+  | seqStop {funs V st s rest V1 st1 o} :
+      Step D funs V st (.stmt s) (.sres V1 st1 o) →
       o ≠ .normal →
-      ExecStmts D funs V st (s :: rest) V1 st1 o
+      Step D funs V st (.stmts (s :: rest)) (.sres V1 st1 o)
 
-/-- Execute a `for`-loop's iteration (condition-check, body, post, repeat) after its `init` block
-has run. `funs`/`V`/`st` carry the loop scope; the outcome is `normal` (loop finished or `break`),
-`leave`, or `halt`. -/
-inductive ExecLoop (D : Dialect) :
-    FunEnv D → VEnv D → D.State → Expr D.Op → Block D.Op → Block D.Op →
-    VEnv D → D.State → Outcome → Prop where
-  | done {funs V st c post body cv st1} :
-      EvalExpr D funs V st c (.vals [cv] st1) →
+  /- ### Loop iteration (condition-check, body, post, repeat — after `init` has run).
+     The outcome is `normal` (loop finished or `break`), `leave`, or `halt`. -/
+
+  | loopDone {funs V st c post body cv st1} :
+      Step D funs V st (.expr c) (.eres (.vals [cv] st1)) →
       cv = D.zero →
-      ExecLoop D funs V st c post body V st1 .normal
-  | condHalt {funs V st c post body st1} :
-      EvalExpr D funs V st c (.halt st1) →
-      ExecLoop D funs V st c post body V st1 .halt
-  | step {funs V st c post body cv st1 Vb stb ob Vp stp Vend stend o} :
-      EvalExpr D funs V st c (.vals [cv] st1) →
+      Step D funs V st (.loop c post body) (.sres V st1 .normal)
+  | loopCondHalt {funs V st c post body st1} :
+      Step D funs V st (.expr c) (.eres (.halt st1)) →
+      Step D funs V st (.loop c post body) (.sres V st1 .halt)
+  | loopStep {funs V st c post body cv st1 Vb stb ob Vp stp Vend stend o} :
+      Step D funs V st (.expr c) (.eres (.vals [cv] st1)) →
       cv ≠ D.zero →
-      ExecStmt D funs V st1 (.block body) Vb stb ob →
+      Step D funs V st1 (.stmt (.block body)) (.sres Vb stb ob) →
       (ob = .normal ∨ ob = .«continue») →
-      ExecStmt D funs Vb stb (.block post) Vp stp .normal →
-      ExecLoop D funs Vp stp c post body Vend stend o →
-      ExecLoop D funs V st c post body Vend stend o
-  | stepPostHalt {funs V st c post body cv st1 Vb stb ob Vp stp} :
-      EvalExpr D funs V st c (.vals [cv] st1) →
+      Step D funs Vb stb (.stmt (.block post)) (.sres Vp stp .normal) →
+      Step D funs Vp stp (.loop c post body) (.sres Vend stend o) →
+      Step D funs V st (.loop c post body) (.sres Vend stend o)
+  | loopPostHalt {funs V st c post body cv st1 Vb stb ob Vp stp} :
+      Step D funs V st (.expr c) (.eres (.vals [cv] st1)) →
       cv ≠ D.zero →
-      ExecStmt D funs V st1 (.block body) Vb stb ob →
+      Step D funs V st1 (.stmt (.block body)) (.sres Vb stb ob) →
       (ob = .normal ∨ ob = .«continue») →
-      ExecStmt D funs Vb stb (.block post) Vp stp .halt →
-      ExecLoop D funs V st c post body Vp stp .halt
-  | brk {funs V st c post body cv st1 Vb stb} :
-      EvalExpr D funs V st c (.vals [cv] st1) →
+      Step D funs Vb stb (.stmt (.block post)) (.sres Vp stp .halt) →
+      Step D funs V st (.loop c post body) (.sres Vp stp .halt)
+  | loopBreak {funs V st c post body cv st1 Vb stb} :
+      Step D funs V st (.expr c) (.eres (.vals [cv] st1)) →
       cv ≠ D.zero →
-      ExecStmt D funs V st1 (.block body) Vb stb .«break» →
-      ExecLoop D funs V st c post body Vb stb .normal
-  | lv {funs V st c post body cv st1 Vb stb} :
-      EvalExpr D funs V st c (.vals [cv] st1) →
+      Step D funs V st1 (.stmt (.block body)) (.sres Vb stb .«break») →
+      Step D funs V st (.loop c post body) (.sres Vb stb .normal)
+  | loopLeave {funs V st c post body cv st1 Vb stb} :
+      Step D funs V st (.expr c) (.eres (.vals [cv] st1)) →
       cv ≠ D.zero →
-      ExecStmt D funs V st1 (.block body) Vb stb .leave →
-      ExecLoop D funs V st c post body Vb stb .leave
-  | bodyHalt {funs V st c post body cv st1 Vb stb} :
-      EvalExpr D funs V st c (.vals [cv] st1) →
+      Step D funs V st1 (.stmt (.block body)) (.sres Vb stb .leave) →
+      Step D funs V st (.loop c post body) (.sres Vb stb .leave)
+  | loopBodyHalt {funs V st c post body cv st1 Vb stb} :
+      Step D funs V st (.expr c) (.eres (.vals [cv] st1)) →
       cv ≠ D.zero →
-      ExecStmt D funs V st1 (.block body) Vb stb .halt →
-      ExecLoop D funs V st c post body Vb stb .halt
+      Step D funs V st1 (.stmt (.block body)) (.sres Vb stb .halt) →
+      Step D funs V st (.loop c post body) (.sres Vb stb .halt)
 
-end
+/-! ### The five conceptual relations, as abbreviations -/
+
+/-- Expression evaluation (a `lit`/`var` yields one value; a call may yield several). -/
+abbrev EvalExpr (D : Dialect) [DecidableEq D.Value] (funs : FunEnv D) (V : VEnv D)
+    (st : D.State) (e : Expr D.Op) (r : EResult D) : Prop :=
+  Step D funs V st (.expr e) (.eres r)
+
+/-- Argument-list evaluation (right-to-left; each argument must be single-valued). -/
+abbrev EvalArgs (D : Dialect) [DecidableEq D.Value] (funs : FunEnv D) (V : VEnv D)
+    (st : D.State) (es : List (Expr D.Op)) (r : EResult D) : Prop :=
+  Step D funs V st (.args es) (.eres r)
+
+/-- Single-statement execution. -/
+abbrev ExecStmt (D : Dialect) [DecidableEq D.Value] (funs : FunEnv D) (V : VEnv D)
+    (st : D.State) (s : Stmt D.Op) (V' : VEnv D) (st' : D.State) (o : Outcome) : Prop :=
+  Step D funs V st (.stmt s) (.sres V' st' o)
+
+/-- Statement-sequence execution. -/
+abbrev ExecStmts (D : Dialect) [DecidableEq D.Value] (funs : FunEnv D) (V : VEnv D)
+    (st : D.State) (ss : List (Stmt D.Op)) (V' : VEnv D) (st' : D.State) (o : Outcome) : Prop :=
+  Step D funs V st (.stmts ss) (.sres V' st' o)
+
+/-- `for`-loop iteration (after `init`). -/
+abbrev ExecLoop (D : Dialect) [DecidableEq D.Value] (funs : FunEnv D) (V : VEnv D)
+    (st : D.State) (c : Expr D.Op) (post body : Block D.Op)
+    (V' : VEnv D) (st' : D.State) (o : Outcome) : Prop :=
+  Step D funs V st (.loop c post body) (.sres V' st' o)
 
 /-- Run a whole program (a top-level block) from an initial state with empty environments. -/
-def Run (D : Dialect) (prog : Block D.Op) (st0 : D.State)
+def Run (D : Dialect) [DecidableEq D.Value] (prog : Block D.Op) (st0 : D.State)
     (V' : VEnv D) (st' : D.State) (o : Outcome) : Prop :=
   ExecStmt D [] [] st0 (.block prog) V' st' o
-
--- TODO(next): the determinism lemma. The relation is deterministic on well-formed programs given
--- `D.Deterministic` for every built-in and distinct switch-case values; the proof is by mutual
--- induction over the relations.
 
 end YulSemantics

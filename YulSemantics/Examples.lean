@@ -17,13 +17,13 @@ open YulSemantics EVM
 
 /-- The empty program runs to a normal outcome, leaving the state and (empty) environment. -/
 example : Run evm [] EvmState.init [] EvmState.init .normal :=
-  ExecStmt.block ExecStmts.nil
+  Step.block Step.seqNil
 
 /-- `{ stop() }` halts. (Exercises the halt-propagation path through `exprStmt`/built-in.) -/
 example : ∃ V' st' o, Run evm [Stmt.exprStmt (Expr.builtin .stop [])] EvmState.init V' st' o :=
   ⟨_, _, _,
-    ExecStmt.block
-      (ExecStmts.consStop (ExecStmt.exprStmtHalt (EvalExpr.builtinHalt EvalArgs.nil rfl)) (by decide))⟩
+    Step.block
+      (Step.seqStop (Step.exprStmtHalt (Step.builtinHalt Step.argsNil rfl)) (by decide))⟩
 
 /-- `{ let x := add(2, 3) }` runs normally. (Exercises `letVal`, `builtinOk`, and right-to-left
 argument evaluation.) -/
@@ -33,12 +33,12 @@ example :
         [Stmt.letDecl ["x"] (some (Expr.builtin .add [Expr.lit (.number 2), Expr.lit (.number 3)]))]
         EvmState.init V' st' o :=
   ⟨_, _, _,
-    ExecStmt.block (ExecStmts.consNormal
-      (ExecStmt.letVal (D := evm) (vals := [litValue (.number 2) + litValue (.number 3)])
-        (EvalExpr.builtinOk
-          (EvalArgs.cons (EvalArgs.cons EvalArgs.nil EvalExpr.lit) EvalExpr.lit) rfl)
+    Step.block (Step.seqCons
+      (Step.letVal (D := evm) (vals := [litValue (.number 2) + litValue (.number 3)])
+        (Step.builtinOk
+          (Step.argsCons (Step.argsCons Step.argsNil Step.lit) Step.lit) rfl)
         rfl)
-      ExecStmts.nil)⟩
+      Step.seqNil)⟩
 
 /-! ### DSL (`YulSemantics.Syntax`) -/
 
