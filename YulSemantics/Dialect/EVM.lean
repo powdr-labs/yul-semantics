@@ -235,8 +235,11 @@ def mkCall (name : Ident) (args : List (Expr Op)) : Expr Op :=
   | some op => .builtin op args
   | none    => .call name args
 
-/-- The gas-free EVM reference dialect. -/
-def evm : Dialect where
+/-- The gas-free EVM reference dialect.
+
+Marked `@[reducible]` so that instance search (e.g. `DecidableEq evm.Value`) and defeq can see through
+to the concrete `Value := BitVec 256` / `State := EvmState`. -/
+@[reducible] def evm : Dialect where
   Op       := Op
   Value    := U256
   State    := EvmState
@@ -244,6 +247,10 @@ def evm : Dialect where
   litWF    := litWF
   Builtin  := fun op args st r => stepOp op args st = some r
   effects  := effects
+
+/-- The EVM dialect as an `ExecDialect`: `Builtin` is defined from `stepOp`, so the executable
+`builtinFn := stepOp` agrees with it by construction. `@[reducible]` for the same reason as `evm`. -/
+@[reducible] def exec : ExecDialect := { toDialect := evm, builtinFn := stepOp }
 
 /-! ### Smoke tests — structural dispatch reduces cleanly (no `maxRecDepth` gymnastics). -/
 

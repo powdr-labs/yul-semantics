@@ -1,6 +1,7 @@
 import YulSemantics.BigStep
 import YulSemantics.Dialect.EVM
 import YulSemantics.Syntax
+import YulSemantics.Interp
 
 /-!
 # YulSemantics.Examples
@@ -100,5 +101,28 @@ def switchProgram : Block EVM.Op := yul% {
   case 2 { x := 20 }
   default { x := 0 }
 }
+
+/-! ### Interpreter (`YulSemantics.Interp`) — running programs end-to-end -/
+
+/-- `{ let x := add(2, 3) }` interpreted from the initial state finishes normally. -/
+example :
+    (Interp.run EVM.exec 100 (yul% { let x := add(2, 3) }) EvmState.init).map (·.2.2)
+      = .ok .normal := by native_decide
+
+/-- `sstore(0, add(2, 3))` actually writes `5` to storage slot `0`. -/
+example :
+    (Interp.run EVM.exec 100 (yul% { sstore(0, add(2, 3)) }) EvmState.init).map (·.2.1.storage 0)
+      = .ok 5 := by native_decide
+
+/-- `stop()` halts. -/
+example :
+    (Interp.run EVM.exec 100 (yul% { stop() }) EvmState.init).map (·.2.2)
+      = .ok .halt := by native_decide
+
+/-- The `sumProgram` (a function with a `for` loop summing `0..9`) computes `45` into memory slot 0
+before returning — exercising function calls, loops, and multiple built-ins through the interpreter. -/
+example :
+    (Interp.run EVM.exec 1000 sumProgram EvmState.init).map (fun r => loadWord r.2.1.memory 0)
+      = .ok 45 := by native_decide
 
 end YulSemantics.Examples
