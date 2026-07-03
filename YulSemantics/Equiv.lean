@@ -145,7 +145,7 @@ private theorem forall₂_symm {α : Type _} {R : α → α → Prop} {l₁ l₂
 /-- Pairwise-equivalent argument lists are equivalent. -/
 theorem EquivArgs.of_forall₂ {es₁ es₂ : List (Expr D.Op)}
     (h : List.Forall₂ (EquivExpr D) es₁ es₂) : EquivArgs D es₁ es₂ :=
-  fun funs V st r =>
+  fun _ _ _ _ =>
     ⟨argsImp (h.imp fun _ _ he funs V st r => (he funs V st r).mp) _ _ _ _,
      argsImp ((forall₂_symm (fun he => he.symm) h).imp
        fun _ _ he funs V st r => (he funs V st r).mp) _ _ _ _⟩

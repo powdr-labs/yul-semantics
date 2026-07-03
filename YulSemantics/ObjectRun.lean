@@ -31,8 +31,11 @@ open YulSemantics
 (keyed by a name's string-literal encoding `litValue (.string name)`, as the built-ins expect).
 This is the artifact a compiler produces; the pure semantics is relative to it. -/
 structure Layout where
+  /-- The deployed bytecode. -/
   code       : List UInt8
+  /-- Byte offset of each named segment within `code`, keyed by `litValue (.string name)`. -/
   dataOffset : U256 → U256
+  /-- Byte length of each named segment, keyed like `dataOffset`. -/
   dataSize   : U256 → U256
 
 /-- The execution environment induced by a layout (all other fields default). -/

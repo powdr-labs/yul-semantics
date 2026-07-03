@@ -104,37 +104,64 @@ inductive HaltKind
 
 /-- One emitted log record: topics plus a copy of the logged memory slice. -/
 structure LogEntry where
+  /-- The indexed topics (`0`–`4` words, from `log0`…`log4`). -/
   topics : List U256
+  /-- The logged memory slice. -/
   data   : List UInt8
   deriving Repr, DecidableEq, Inhabited
+
+-- The `prec` argument of the auto-derived pretty-printer is genuinely unused for this plain record.
+attribute [nolint unusedArguments] instReprLogEntry.repr
 
 /-- The (immutable) execution environment: transaction/block context, input data, and abstract
 read-only views of the world state. Addresses are represented as words. -/
 structure ExecEnv where
+  /-- The executing account's address (`address`). -/
   address       : U256 := 0
+  /-- The transaction sender (`origin`). -/
   origin        : U256 := 0
+  /-- The immediate caller (`caller`). -/
   caller        : U256 := 0
+  /-- The wei sent with this call (`callvalue`). -/
   callvalue     : U256 := 0
+  /-- The gas price of the transaction (`gasprice`). -/
   gasprice      : U256 := 0
+  /-- The executing account's own balance (`selfbalance`). -/
   selfBalance   : U256 := 0
+  /-- The current block's beneficiary address (`coinbase`). -/
   coinbase      : U256 := 0
+  /-- The current block's timestamp (`timestamp`). -/
   timestamp     : U256 := 0
+  /-- The current block number (`number`). -/
   number        : U256 := 0
+  /-- The current block's randomness beacon (`prevrandao`). -/
   prevrandao    : U256 := 0
+  /-- The current block's gas limit (`gaslimit`). -/
   gaslimit      : U256 := 0
+  /-- The chain identifier (`chainid`). -/
   chainid       : U256 := 0
+  /-- The current block's base fee (`basefee`). -/
   basefee       : U256 := 0
+  /-- The current block's blob base fee (`blobbasefee`). -/
   blobbasefee   : U256 := 0
+  /-- The call's input data (`calldata*`). -/
   calldata      : List UInt8 := []
+  /-- The executing account's own code (`codesize`/`codecopy`). -/
   code          : List UInt8 := []
+  /-- Balance lookup for any address (`balance`). -/
   balanceOf     : U256 → U256 := fun _ => 0
+  /-- Code lookup for any address (`extcodesize`/`extcodecopy`). -/
   extCodeOf     : U256 → List UInt8 := fun _ => []
+  /-- Code-hash lookup for any address (`extcodehash`). -/
   extCodeHashOf : U256 → U256 := fun _ => 0
+  /-- Block-hash lookup by block number (`blockhash`). -/
   blockHashOf   : U256 → U256 := fun _ => 0
+  /-- Blob-hash lookup by index (`blobhash`). -/
   blobHashOf    : U256 → U256 := fun _ => 0
-  -- object-layout maps for `dataoffset`/`datasize`, keyed by the *name's* string-literal encoding
-  -- (`litValue (.string name)`); supplied by the compiler's layout (`YulSemantics.Object`).
+  /-- Object-layout offset map for `dataoffset`, keyed by the *name's* string-literal encoding
+  (`litValue (.string name)`); supplied by the compiler's layout (`YulSemantics.Object`). -/
   dataOffset    : U256 → U256 := fun _ => 0
+  /-- Object-layout size map for `datasize`, keyed like `dataOffset`. -/
   dataSize      : U256 → U256 := fun _ => 0
   deriving Inhabited
 
@@ -147,12 +174,19 @@ structure ExecEnv where
 * `logs` — emitted log records, in order.
 * `halted` — set once a halting built-in fires: its kind and the return/revert data. -/
 structure EvmState where
+  /-- Byte-addressable memory, unbounded, default `0`. -/
   memory     : Nat → UInt8
+  /-- Word-addressable persistent storage, default `0`. -/
   storage    : U256 → U256
+  /-- Word-addressable transient storage (`tload`/`tstore`), default `0`. -/
   transient  : U256 → U256
+  /-- The immutable execution environment. -/
   env        : ExecEnv
+  /-- The return-data buffer (written by external calls, which are unmodeled here). -/
   returndata : List UInt8
+  /-- Emitted log records, in order. -/
   logs       : List LogEntry
+  /-- Set once a halting built-in fires: its kind and the return/revert data. -/
   halted     : Option (HaltKind × List UInt8)
 
 /-- The initial machine state: zeroed memory/storage, default environment, not halted. -/

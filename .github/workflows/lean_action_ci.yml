@@ -29,4 +29,4 @@ jobs:
           use-mathlib-cache: "true"
           build: "true"
           test: "false"
-          lint: "false"
+          lint: "true"

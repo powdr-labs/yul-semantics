@@ -1,4 +1,5 @@
 import YulSemantics.Ast
+import Batteries.Tactic.Lint  -- for the `nolint` attribute and the `unusedArguments` linter
 
 /-!
 # YulSemantics.Dialect
@@ -57,11 +58,18 @@ implies the built-in never changes the state).
 * `writes` — the built-in may change the machine state.
 * `halts`  — the built-in may halt execution instead of returning. -/
 structure Effects where
+  /-- Same arguments and state always yield the same result. -/
   deterministic : Bool
+  /-- The result may depend on the machine state. -/
   reads  : Bool
+  /-- The built-in may change the machine state. -/
   writes : Bool
+  /-- The built-in may halt execution instead of returning. -/
   halts  : Bool
   deriving Repr, DecidableEq, Inhabited
+
+-- The `prec` argument of the auto-derived pretty-printer is genuinely unused for this plain record.
+attribute [nolint unusedArguments] instReprEffects.repr
 
 namespace Effects
 
