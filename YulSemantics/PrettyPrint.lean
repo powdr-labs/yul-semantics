@@ -113,6 +113,26 @@ def print (b : Block EVM.Op) : String := ppProgram EVM.opName b
 
 end EVM
 
+/-! ### Lean integration
+
+`Repr` stays the **faithful** constructor-level view (derived, untouched): it is the ground truth
+when debugging the DSL or a pass — two different ASTs must never print identically (e.g.
+`.call "add"` vs `.builtin .add`). Human-readable Yul goes through Lean's human-readable channel
+instead: `ToString` instances (string interpolation, `IO.println`) and `EVM.dump` for multi-line
+`#eval` output. We deliberately do not override `Repr` even though `#eval` prefers it.
+
+Caveat: `Block` is an abbreviation for `List Stmt`, so `toString` on a block goes through the
+generic `List` instance (`[stmt, …]`) — use `EVM.print`/`EVM.dump` for blocks and programs. -/
+
+instance : ToString Literal := ⟨ppLiteral⟩
+instance : ToString (Expr EVM.Op) := ⟨ppExpr EVM.opName⟩
+instance : ToString (Stmt EVM.Op) := ⟨ppStmt EVM.opName 0⟩
+
+/-- Multi-line, `#eval`-friendly program dump: `#eval EVM.dump prog`. -/
+def EVM.dump (b : Block EVM.Op) : IO Unit := IO.println (EVM.print b)
+
+example : s!"{yulE% add(x, 1)}" = "add(x, 1)" := rfl
+
 /-! ### Round-trip checks against the DSL (string-exact, by `rfl`) -/
 
 example : EVM.printExpr (yulE% add(x, 1)) = "add(x, 1)" := rfl
