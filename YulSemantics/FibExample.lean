@@ -161,15 +161,30 @@ theorem fibLoop (funs : FunEnv evm) (st : EvmState) (nv : U256) :
       rw [hi, hb]
       exact ih (I + 1) (by omega)
 
-/-- **The contract is correct, for every input.** Reading `n` from calldata, `fibContract` halts,
-writes `fib n` (mod `2^256`) to memory slot `0`, and returns that 32-byte word. The prelude
-(`let n/a/b`) sets up the loop invariant at `I = 0` (using `fib 0 = 0`, `fib 1 = 1`); `fibLoop`
-drives it to `I = n`; the postlude stores and returns the result. -/
+/-- The big-endian 32-byte encoding of a word — the inverse of `loadWord … 0` / `wordFrom … 0`,
+and exactly what `return(0, 32)` yields after `mstore(0, v)`. -/
+def wordBytes (v : U256) : List UInt8 := (List.range 32).map (fun i => byteAt v (31 - i))
+
+/-- Storing `v` at memory slot `0` and reading back the 32 bytes there yields `v`'s big-endian
+encoding — independent of the prior memory contents. -/
+theorem readBytes_storeWord (mem : Nat → UInt8) (v : U256) :
+    readBytes (storeWord mem 0 v) 0 32 = wordBytes v := by
+  unfold readBytes wordBytes
+  apply List.map_congr_left
+  intro i hi
+  rw [List.mem_range] at hi
+  simp only [storeWord, Nat.zero_add, Nat.sub_zero]
+  rw [if_pos (by omega)]
+
+/-- **The contract is correct, for every input.** Reading `n` from calldata, `fibContract` halts
+and returns `fib n` (mod `2^256`) as a big-endian 32-byte word. The prelude (`let n/a/b`) sets up
+the loop invariant at `I = 0` (using `fib 0 = 0`, `fib 1 = 1`); `fibLoop` drives it to `I = n`; the
+postlude stores the result to memory and returns it (`readBytes_storeWord` turns the returned memory
+slice into `wordBytes`). -/
 theorem fibContract_correct (st0 : EvmState) :
     ∃ st, Run evm fibContract st0 [] st .halt ∧
-      st.memory = storeWord st0.memory 0
-        (BitVec.ofNat 256 (Nat.fib (wordFrom st0.env.calldata 0).toNat)) ∧
-      st.halted = some (.ret, readBytes st.memory 0 32) := by
+      st.halted = some (.ret,
+        wordBytes (BitVec.ofNat 256 (Nat.fib (wordFrom st0.env.calldata 0).toNat))) := by
   have hstmts : ExecStmts evm (hoist evm fibContract :: []) [] st0 fibContract
       [("b", BitVec.ofNat 256 (Nat.fib ((wordFrom st0.env.calldata 0).toNat + 1))),
        ("a", BitVec.ofNat 256 (Nat.fib (wordFrom st0.env.calldata 0).toNat)),
@@ -196,6 +211,7 @@ theorem fibContract_correct (st0 : EvmState) :
     -- return(0, 32)
     exact Step.seqStop (Step.exprStmtHalt (Step.builtinHalt
       (Step.argsCons (Step.argsCons Step.argsNil Step.lit) Step.lit) rfl)) (by decide)
-  exact ⟨_, Step.block hstmts, rfl, rfl⟩
+  refine ⟨_, Step.block hstmts, ?_⟩
+  simp only [readBytes_storeWord]
 
 end YulSemantics.FibExample
