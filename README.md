@@ -30,10 +30,31 @@ lake build
 
 ## Status
 
-The semantics (relational ground truth, determinism, executable interpreter with a proven
-adequacy theorem), the `yul%` DSL, a pretty-printer, and the optimization meta-theory
-(equivalences, congruences, a verified-pass skeleton) are in place. See the annotated build plan
-at the end of [`DESIGN.md`](./DESIGN.md) for details and open threads.
+In place:
+
+- **Core semantics** — the big-step relational ground truth, a determinism proof, and a
+  fuel-indexed executable interpreter with a proven adequacy (soundness + completeness) theorem.
+- **EVM dialect** — the full built-in set (through the upcoming hard fork), over `BitVec 256`.
+- **Objects** — the Yul object layer (nested `code`/`data`/sub-objects): name resolution, a
+  layout-consistency predicate relating a compiler's byte layout to an object, and a symbolic proof
+  that the canonical constructor (`datacopy`/`return`) returns a data segment's bytes.
+- **Surface tooling** — the `yul%` / `yulObject%` concrete-syntax DSL and a pretty-printer.
+- **Optimization meta-theory** — pointwise program equivalence, congruence lemmas, and a
+  verified-pass skeleton.
+
+See the annotated build plan at the end of [`DESIGN.md`](./DESIGN.md) for details and open threads.
+
+## Worked example
+
+[`YulSemantics/FibExample.lean`](./YulSemantics/FibExample.lean) is a first end-to-end verification:
+a Yul contract that reads `n` from calldata, computes the `n`-th Fibonacci number, and returns it.
+It is proven correct two ways:
+
+- **concretely**, by running the interpreter for several inputs (`native_decide`); and
+- **generally** (`fibContract_correct`): for *every* initial state the contract halts, writes
+  `fib(n) mod 2²⁵⁶` to memory, and returns that word. The proof is fully relational — a loop
+  invariant (`fibLoop`, `a = fib i`, `b = fib(i+1)`) by induction on the remaining iterations,
+  assembled with the prelude and postlude into the whole run.
 
 ## Acknowledgements
 
