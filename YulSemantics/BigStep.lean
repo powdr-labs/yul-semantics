@@ -59,8 +59,11 @@ abbrev VEnv (D : Dialect) := List (Ident × D.Value)
 
 /-- A user-defined function declaration (its signature and body). -/
 structure FDecl (D : Dialect) where
+  /-- The function's formal parameter names. -/
   params : List Ident
+  /-- The function's output ("return") variable names. -/
   rets   : List Ident
+  /-- The function body. -/
   body   : Block D.Op
 
 /-- One lexical scope's worth of (mutually-recursive) function declarations. -/

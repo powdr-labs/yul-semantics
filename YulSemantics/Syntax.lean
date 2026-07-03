@@ -32,41 +32,67 @@ open YulSemantics
 
 /-! ### Syntax categories -/
 
+/-- Syntax category for Yul expressions. -/
 declare_syntax_cat yulexpr
+/-- Syntax category for Yul statements. -/
 declare_syntax_cat yulstmt
+/-- Syntax category for a single `switch` case. -/
 declare_syntax_cat yulcase
+/-- Syntax category for a Yul `object`. -/
 declare_syntax_cat yulobject
+/-- Syntax category for an item inside an object (a sub-object or a data segment). -/
 declare_syntax_cat yulobjitem
 
 -- expressions (`true`/`false` are handled as identifiers, to avoid clashing with Lean keywords)
+/-- A number literal. -/
 syntax num : yulexpr
+/-- A string literal. -/
 syntax str : yulexpr
-syntax:max ident "(" yulexpr,* ")" : yulexpr   -- call (built-in or user function)
-syntax:max ident : yulexpr                      -- variable / `true` / `false`
+/-- A call to a built-in or user function. -/
+syntax:max ident "(" yulexpr,* ")" : yulexpr
+/-- A variable reference (or the `true` / `false` literals). -/
+syntax:max ident : yulexpr
 
 -- statements
+/-- A `let` declaration of one or more variables, with an optional initializer. -/
 syntax "let " ident,+ (" := " yulexpr)? : yulstmt
+/-- An assignment to one or more already-declared variables. -/
 syntax (name := assignS) ident,+ " := " yulexpr : yulstmt
+/-- An `if` statement (Yul has no `else`). -/
 syntax "if " yulexpr "{" yulstmt* "}" : yulstmt
+/-- A single `case` of a `switch`. -/
 syntax "case " yulexpr "{" yulstmt* "}" : yulcase
+/-- A `switch` with zero or more cases and an optional `default`. -/
 syntax "switch " yulexpr yulcase* (" default " "{" yulstmt* "}")? : yulstmt
+/-- A `for` loop: `for { init } cond { post } { body }`. -/
 syntax "for " "{" yulstmt* "}" yulexpr "{" yulstmt* "}" "{" yulstmt* "}" : yulstmt
+/-- `break` — exit the enclosing loop. -/
 syntax "break" : yulstmt
+/-- `continue` — skip to the enclosing loop's `post` block. -/
 syntax "continue" : yulstmt
+/-- `leave` — return from the enclosing function. -/
 syntax "leave" : yulstmt
+/-- A function definition, with optional `-> ret` outputs. -/
 syntax "function " ident "(" ident,* ")" (" -> " ident,+)? "{" yulstmt* "}" : yulstmt
-syntax "{" yulstmt* "}" : yulstmt               -- nested block
-syntax:max ident "(" yulexpr,* ")" : yulstmt    -- call expression-statement
-syntax "return" "(" yulexpr,* ")" : yulstmt     -- `return(…)` (`return` is a Lean keyword)
+/-- A nested block, introducing a new scope. -/
+syntax "{" yulstmt* "}" : yulstmt
+/-- A call evaluated as a statement (for its effects). -/
+syntax:max ident "(" yulexpr,* ")" : yulstmt
+/-- `return(…)` — spelled out because `return` is a Lean keyword. -/
+syntax "return" "(" yulexpr,* ")" : yulstmt
 
 -- objects. The *leading* symbols `object`/`data` must be reserved (a category production cannot
 -- lead with a non-reserved symbol); neither collides with any identifier. The non-leading `code`
 -- and `hex` stay non-reserved, so `ExecEnv.code` and `Data.hex` remain usable.
+/-- A Yul `object`: a named `code` block followed by sub-objects and data segments. -/
 syntax (name := objectS)
   "object" str "{" &"code" "{" yulstmt* "}" yulobjitem* "}" : yulobject
-syntax (name := subObjS) yulobject : yulobjitem     -- a sub-object
-syntax (name := dataStrS) "data" str str : yulobjitem        -- data "name" "string"
-syntax (name := dataHexS) "data" str &"hex" str : yulobjitem -- data "name" hex"…"
+/-- A nested sub-object. -/
+syntax (name := subObjS) yulobject : yulobjitem
+/-- A string data segment: `data "name" "contents"`. -/
+syntax (name := dataStrS) "data" str str : yulobjitem
+/-- A hex data segment: `data "name" hex"…"`. -/
+syntax (name := dataHexS) "data" str &"hex" str : yulobjitem
 
 /-! ### Elaboration to AST terms -/
 
