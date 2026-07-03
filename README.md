@@ -12,8 +12,8 @@ The EVM bytecode semantics lives in a different repository.
 See [`DESIGN.md`](./DESIGN.md) for the full design and its rationale. In short:
 
 - **Gas is not modeled.** Optimization correctness is functional equivalence.
-- **Ground truth is a big-step relational semantics** (an inductive evaluation relation). An
-  executable interpreter is optional and deferred.
+- **Ground truth is a big-step relational semantics** (an inductive evaluation relation). A
+  fuel-indexed executable interpreter is provided as a derived view, proven adequate.
 - The semantics is **parameterized over an abstract `Dialect`** (value type, machine state, built-in
   interpretation), keeping the core dialect-agnostic.
 - The **EVM dialect uses `BitVec 256`** for words.
@@ -30,8 +30,17 @@ lake build
 
 ## Status
 
-Phase 0 (toolchain, Mathlib, module layout) complete. See the build plan in `DESIGN.md` for the
-remaining phases.
+The semantics (relational ground truth, determinism, executable interpreter with a proven
+adequacy theorem), the `yul%` DSL, a pretty-printer, and the optimization meta-theory
+(equivalences, congruences, a verified-pass skeleton) are in place. See the annotated build plan
+at the end of [`DESIGN.md`](./DESIGN.md) for details and open threads.
+
+## Acknowledgements
+
+This project is inspired by [EVMYulLean](https://github.com/NethermindEth/EVMYulLean),
+Nethermind's Lean 4 formalization of the EVM and Yul — in particular, embedding Yul concrete
+syntax as a Lean DSL follows its spirit. The semantics here is an independent, dialect-parametric
+design; see [`DESIGN.md`](./DESIGN.md).
 
 ## License
 
