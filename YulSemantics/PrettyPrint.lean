@@ -15,9 +15,10 @@ consume, and future per-pass pipeline dumps. A round-trip theorem is not current
 
 Caveats (fine for the intended uses, noted for honesty):
 * numbers print in decimal;
-* string literals are quoted naively (no escaping);
+* string literals are quoted naively (no escaping); data segments print as `"…"`/`hex"…"`;
 * identifiers are printed verbatim — output is lexically valid Yul only if they are;
-* `Object`s are not printed yet (deferred together with `Object` semantics).
+* objects print their `code`, then sub-objects, then data (source interleaving of the latter two
+  is not preserved — the `Object` AST does not record it).
 -/
 
 namespace YulSemantics
@@ -100,6 +101,34 @@ end
 def ppProgram (pOp : Op → String) (b : Block Op) : String :=
   "{\n" ++ ppStmts pOp 1 b ++ "}"
 
+/-- Print a data segment's contents (`"…"` or `hex"…"`). -/
+def ppData : Data → String
+  | .string s => "\"" ++ s ++ "\""
+  | .hex bs   => "hex\"" ++ Data.toHex bs ++ "\""
+
+/-- Print an object's named data segments, one per line at level `ind`. -/
+def ppDataList (ind : Nat) : List (String × Data) → String
+  | []          => ""
+  | (n, d) :: ds => pad ind ++ "data \"" ++ n ++ "\" " ++ ppData d ++ "\n" ++ ppDataList ind ds
+
+mutual
+
+/-- Print an object at indentation level `ind` (`code` block, then sub-objects, then data). -/
+def ppObject (pOp : Op → String) (ind : Nat) : Object Op → String
+  | .mk name codeBlock subs dataSegs =>
+      "object \"" ++ name ++ "\" {\n" ++
+        pad (ind + 1) ++ "code {\n" ++ ppStmts pOp (ind + 2) codeBlock ++ pad (ind + 1) ++ "}\n" ++
+        ppObjects pOp (ind + 1) subs ++
+        ppDataList (ind + 1) dataSegs ++
+      pad ind ++ "}"
+
+/-- Print a list of sub-objects, one per line at level `ind`. -/
+def ppObjects (pOp : Op → String) (ind : Nat) : List (Object Op) → String
+  | []      => ""
+  | o :: os => pad ind ++ ppObject pOp ind o ++ "\n" ++ ppObjects pOp ind os
+
+end
+
 namespace EVM
 
 /-- Print an EVM-dialect expression. -/
@@ -110,6 +139,9 @@ def printStmt (s : Stmt EVM.Op) : String := ppStmt EVM.opName 0 s
 
 /-- Print an EVM-dialect program. -/
 def print (b : Block EVM.Op) : String := ppProgram EVM.opName b
+
+/-- Print an EVM-dialect object. -/
+def printObject (o : Object EVM.Op) : String := ppObject EVM.opName 0 o
 
 end EVM
 
@@ -131,6 +163,9 @@ instance : ToString (Stmt EVM.Op) := ⟨ppStmt EVM.opName 0⟩
 /-- Multi-line, `#eval`-friendly program dump: `#eval EVM.dump prog`. -/
 def EVM.dump (b : Block EVM.Op) : IO Unit := IO.println (EVM.print b)
 
+/-- Multi-line, `#eval`-friendly object dump: `#eval EVM.dumpObject obj`. -/
+def EVM.dumpObject (o : Object EVM.Op) : IO Unit := IO.println (EVM.printObject o)
+
 example : s!"{yulE% add(x, 1)}" = "add(x, 1)" := rfl
 
 /-! ### Round-trip checks against the DSL (string-exact, by `rfl`) -/
@@ -146,5 +181,34 @@ example :
 -- The intended workflow — printing optimizer output, e.g.
 -- `EVM.print (Passes.constantFolding.run p)` — is demonstrated once the `optimizer_correctness`
 -- branch (which provides `Passes`) is merged.
+
+/-! ### Object round-trips (DSL → printer) -/
+
+open Yul in
+/-- Parsing an object exposes its structure. -/
+example : (yulObject% object "C" { code { sstore(0, 1) } }).name = "C" := rfl
+
+open Yul in
+example :
+    EVM.printObject (yulObject% object "C" { code { sstore(0, 1) } data "meta" "hi" })
+      = "object \"C\" {\n    code {\n        sstore(0, 1)\n    }\n    data \"meta\" \"hi\"\n}" := rfl
+
+open Yul in
+/-- A hex data segment round-trips through `Data.ofHex`/`Data.toHex`. -/
+example :
+    EVM.printObject (yulObject% object "C" { code { } data "b" hex"00ff" })
+      = "object \"C\" {\n    code {\n    }\n    data \"b\" hex\"00ff\"\n}" := by native_decide
+
+open Yul in
+/-- A constructor object with a nested `runtime` sub-object prints with proper nesting. -/
+example :
+    EVM.printObject
+        (yulObject% object "C" {
+          code { return(0, datasize("runtime")) }
+          object "runtime" { code { sstore(0, 1) } }
+        })
+      = "object \"C\" {\n    code {\n        return(0, datasize(\"runtime\"))\n    }\n" ++
+        "    object \"runtime\" {\n        code {\n            sstore(0, 1)\n        }\n    }\n}"
+      := rfl
 
 end YulSemantics
