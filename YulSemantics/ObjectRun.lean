@@ -84,6 +84,64 @@ theorem datacopy_copies_data (L : Layout) (o : Object EVM.Op) (hc : L.Consistent
   rw [readBytes_copyInto]
   exact hbytes
 
+/-! ### The canonical constructor, returning a data segment (general theorem)
+
+The standard deploy-code pattern for a data segment `name`:
+`datacopy(0, dataoffset(name), datasize(name)); return(0, datasize(name))`. Under a layout that
+places `name` (i.e. a consistent layout, for a segment of the object), running it halts returning
+exactly the segment's bytes. -/
+
+/-- The canonical constructor code that copies and returns the data segment `n`. -/
+def constructorCode (n : Ident) : Block EVM.Op :=
+  [ .exprStmt (.builtin .datacopy
+      [.lit (.number 0), .builtin .dataoffset [.lit (.string n)], .builtin .datasize [.lit (.string n)]]),
+    .exprStmt (.builtin .ret [.lit (.number 0), .builtin .datasize [.lit (.string n)]]) ]
+
+/-- `datasize(name)` evaluates (at any configuration) to the environment's recorded size. -/
+theorem eval_datasize (funs : FunEnv evm) (V : VEnv evm) (st : EvmState) (n : Ident) :
+    EvalExpr evm funs V st (.builtin .datasize [.lit (.string n)])
+      (.vals [st.env.dataSize (litValue (.string n))] st) :=
+  Step.builtinOk (Step.argsCons Step.argsNil Step.lit) rfl
+
+/-- `dataoffset(name)` evaluates to the environment's recorded offset. -/
+theorem eval_dataoffset (funs : FunEnv evm) (V : VEnv evm) (st : EvmState) (n : Ident) :
+    EvalExpr evm funs V st (.builtin .dataoffset [.lit (.string n)])
+      (.vals [st.env.dataOffset (litValue (.string n))] st) :=
+  Step.builtinOk (Step.argsCons Step.argsNil Step.lit) rfl
+
+/-- **Capstone**: under a layout that places the data segment `n` (of byte length `d.size`, which
+must fit a word), the canonical constructor halts, returning exactly `d.bytes`. -/
+theorem constructorCode_returns (L : Layout) (n : Ident) (d : Data)
+    (hsize : L.dataSize (litValue (.string n)) = BitVec.ofNat 256 d.size)
+    (hbytes : readBytes (byteFrom L.code)
+      (L.dataOffset (litValue (.string n))).toNat d.size = d.bytes)
+    (hlt : d.size < 2 ^ 256) :
+    ∃ V st, Run evm (constructorCode n) L.initState V st .halt ∧
+      st.halted = some (.ret, d.bytes) := by
+  refine ⟨[], _, Step.block (Step.seqCons
+      (Step.exprStmt (Step.builtinOk
+        (Step.argsCons (Step.argsCons (Step.argsCons Step.argsNil (eval_datasize _ _ _ _))
+          (eval_dataoffset _ _ _ _)) Step.lit) rfl))
+      (Step.seqStop
+        (Step.exprStmtHalt (Step.builtinHalt
+          (Step.argsCons (Step.argsCons Step.argsNil (eval_datasize _ _ _ _)) Step.lit) rfl))
+        (by decide))), ?_⟩
+  -- remaining goal: the halted field of the (inferred) final state is `some (.ret, d.bytes)`
+  have hsz : (L.dataSize (litValue (.string n))).toNat = d.size := by
+    rw [hsize, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hlt]
+  simp only [Layout.initState, Layout.env]
+  rw [readBytes_copyInto, hsz, hbytes]
+
+/-- The capstone, from consistency and membership: for any data segment of `o`, the canonical
+constructor returns its bytes under a consistent layout. -/
+theorem constructorCode_returns_of_consistent (L : Layout) (o : Object EVM.Op)
+    (hc : L.Consistent o) {n : Ident} {d : Data} (hmem : (n, d) ∈ o.dataSegs)
+    (hlt : d.size < 2 ^ 256) :
+    ∃ V st, Run evm (constructorCode n) L.initState V st .halt ∧
+      st.halted = some (.ret, d.bytes) :=
+  have h := hc (n, d) hmem
+  constructorCode_returns L n d h.1 h.2 hlt
+
 /-! ### End-to-end demonstration
 
 A constructor object that returns its `blob` data segment, run under a consistent layout. -/
