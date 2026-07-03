@@ -2,6 +2,7 @@
 -- Import modules here that should be built as part of the library.
 import YulSemantics.Basic
 import YulSemantics.Ast
+import YulSemantics.Object
 import YulSemantics.Dialect
 import YulSemantics.Dialect.EVM
 import YulSemantics.BigStep
