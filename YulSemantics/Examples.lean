@@ -2,6 +2,7 @@ import YulSemantics.BigStep
 import YulSemantics.Dialect.EVM
 import YulSemantics.Syntax
 import YulSemantics.Interp
+import YulSemantics.Object
 
 /-!
 # YulSemantics.Examples
@@ -135,5 +136,43 @@ example :
 example :
     (Interp.run EVM.exec 100 (yul% { sstore(0, clz(1)) }) EvmState.init).map (·.2.1.storage 0)
       = .ok 255 := by native_decide
+
+/-! ### Objects (`YulSemantics.Object`) -/
+
+/-- A contract object `C` with a `runtime` sub-object and a named data segment. -/
+def demoObject : Object EVM.Op :=
+  .mk "C"
+    (yul% {
+      datacopy(0, dataoffset("runtime"), datasize("runtime"))
+      return(0, datasize("runtime"))
+    })
+    [.mk "runtime" (yul% { sstore(0, 1) }) [] []]
+    [("meta", .hex [0x01, 0x02, 0x03])]
+
+/-- Name resolution: a data segment resolves and its size is concretely known. -/
+example : demoObject.dataRefSize "meta" = some 3 := by native_decide
+/-- A sub-object resolves (to `.inl`); its size is layout-dependent, hence not a `dataRefSize`. -/
+example : (demoObject.lookupRef "runtime").isSome = true := by native_decide
+example : demoObject.dataRefSize "runtime" = none := by native_decide
+/-- A dotted path descends into a sub-object; an unknown name fails to resolve. -/
+example : (demoObject.lookupRef "runtime.nope").isNone = true := by native_decide
+example : (demoObject.lookupRef "absent").isNone = true := by native_decide
+/-- The leading path component may name the current object itself. -/
+example : demoObject.dataRefSize "C.meta" = some 3 := by native_decide
+
+/-- A layout consistent with `demoObject`: `runtime` sits at offset 5, size 3, in the bytecode. -/
+def demoEnv : EVM.EvmState :=
+  let key := EVM.litValue (.string "runtime")
+  { EvmState.init with env :=
+    { EvmState.init.env with
+      code       := [0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x01, 0x60],   -- runtime bytes at [5,8)
+      dataOffset := fun k => if k = key then 5 else 0
+      dataSize   := fun k => if k = key then 3 else 0 } }
+
+/-- End-to-end: the constructor copies its `runtime` bytes into memory and returns them —
+`datacopy`/`dataoffset`/`datasize` read the layout and the code region through the interpreter. -/
+example :
+    (Interp.run EVM.exec 100 demoObject.code demoEnv).map (·.2.1.halted)
+      = .ok (some (.ret, [0x60, 0x01, 0x60])) := by native_decide
 
 end YulSemantics.Examples

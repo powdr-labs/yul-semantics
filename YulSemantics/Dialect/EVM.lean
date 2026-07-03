@@ -19,7 +19,8 @@ about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the f
   storage, calldata/code/returndata reads and copies, the execution-environment readers
   (`address` … `blobbasefee`, `selfbalance`), world-state reads via abstract environment maps
   (`balance`, `extcodesize`/`extcodecopy`/`extcodehash`, `blockhash`, `blobhash`), `log0`–`log4`,
-  and the halting ops (`stop`/`return`/`revert`/`invalid`).
+  the object-data ops (`dataoffset`/`datasize`/`datacopy`, layout-abstracted — see below and
+  `YulSemantics.Object`), and the halting ops (`stop`/`return`/`revert`/`invalid`).
 * **Enumerated but unmodeled** (`stepOp` returns `none`; the real semantics arrives by
   instantiating the `Dialect` with the external EVM):
   - `gas` — **deliberately** not a function of our state: it is nondeterministic by design
@@ -35,9 +36,18 @@ about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the f
     `JUMP*`, `PC`) — Yul has no stack; these are bytecode-level and belong to the EVM repo and the
     compiler backend;
   - `pc()` (disallowed in modern Yul) and `difficulty()` (pre-Paris alias of `prevrandao`);
-  - object-level builtins (`datasize`/`dataoffset`/`datacopy`) — they belong with `Object`
-    semantics — and solc extensions (`verbatim*`, `memoryguard`, `linkersymbol`,
-    `setimmutable`/`loadimmutable`).
+  - solc extensions (`verbatim*`, `memoryguard`, `linkersymbol`, `setimmutable`/`loadimmutable`).
+
+## Object data (`dataoffset`/`datasize`/`datacopy`)
+
+`datacopy(t, f, l)` copies `l` bytes from the code region to memory — semantically `codecopy`
+(deployed bytecode carries data segments appended to the code). `dataoffset(name)`/`datasize(name)`
+return the byte offset/size of a named data segment or sub-object in that bytecode. These are
+**layout-dependent** — a sub-object's size is the length of *its compiled bytecode*, and offsets
+are chosen at assembly time — so they are read from the `ExecEnv.dataOffset`/`dataSize` maps, which
+the compiler supplies consistently with the object (`YulSemantics.Object`). Modeling caveat: a name
+is keyed by its string-literal encoding `litValue (.string name)`; this is injective for the short
+identifiers Yul object/data names actually are (≤ 31 bytes, distinct), and aliases otherwise.
 
 Spec deviations (documented): `returndatacopy` out-of-bounds is *stuck* rather than an exceptional
 halt; `blockhash`'s 256-block window and `blobhash`'s index bound are abstracted into the
@@ -72,6 +82,8 @@ inductive Op
   -- calldata / code / returndata
   | calldataload | calldatasize | calldatacopy | codesize | codecopy
   | returndatasize | returndatacopy
+  -- object data (layout-abstracted; see `YulSemantics.Object`)
+  | datasize | dataoffset | datacopy
   -- execution environment
   | address | origin | caller | callvalue | gasprice | selfbalance
   | coinbase | timestamp | number | prevrandao | gaslimit | chainid | basefee | blobbasefee
@@ -120,6 +132,10 @@ structure ExecEnv where
   extCodeHashOf : U256 → U256 := fun _ => 0
   blockHashOf   : U256 → U256 := fun _ => 0
   blobHashOf    : U256 → U256 := fun _ => 0
+  -- object-layout maps for `dataoffset`/`datasize`, keyed by the *name's* string-literal encoding
+  -- (`litValue (.string name)`); supplied by the compiler's layout (`YulSemantics.Object`).
+  dataOffset    : U256 → U256 := fun _ => 0
+  dataSize      : U256 → U256 := fun _ => 0
   deriving Inhabited
 
 /-- The (gas-free) EVM machine state.
@@ -327,6 +343,14 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
             some (.ok [] { st with memory := copyInto st.memory dst.toNat src.toNat n.toNat st.returndata })
           else none
       | _ => none
+  -- object data: `dataoffset`/`datasize` read the layout maps (keyed by the name's string-literal
+  -- encoding); `datacopy` copies from the code region, exactly like `codecopy`.
+  | .datasize   => rd1 (fun k => st.env.dataSize k) args st
+  | .dataoffset => rd1 (fun k => st.env.dataOffset k) args st
+  | .datacopy   => match args with
+      | [dst, off, n] =>
+          some (.ok [] { st with memory := copyInto st.memory dst.toNat off.toNat n.toNat st.env.code })
+      | _ => none
   -- execution environment
   | .address     => rd0 st.env.address args st
   | .origin      => rd0 st.env.origin args st
@@ -381,13 +405,14 @@ def effects : Op → Effects
   | .address | .origin | .caller | .callvalue | .gasprice | .selfbalance
   | .coinbase | .timestamp | .number | .prevrandao | .gaslimit | .chainid
   | .basefee | .blobbasefee
-  | .balance | .extcodesize | .extcodehash | .blockhash | .blobhash =>
+  | .balance | .extcodesize | .extcodehash | .blockhash | .blobhash
+  | .datasize | .dataoffset =>
       { deterministic := true, reads := true, writes := false, halts := false }
   -- deterministic writes (no state read)
   | .mstore | .mstore8 | .sstore | .tstore =>
       { deterministic := true, reads := false, writes := true, halts := false }
   -- deterministic read+write (copies and logs read memory/data and write memory/logs)
-  | .mcopy | .calldatacopy | .codecopy | .returndatacopy | .extcodecopy
+  | .mcopy | .calldatacopy | .codecopy | .returndatacopy | .extcodecopy | .datacopy
   | .log0 | .log1 | .log2 | .log3 | .log4 =>
       { deterministic := true, reads := true, writes := true, halts := false }
   -- external interaction: conservative
@@ -416,6 +441,7 @@ def opName : Op → String
   | .calldataload => "calldataload" | .calldatasize => "calldatasize"
   | .calldatacopy => "calldatacopy" | .codesize => "codesize" | .codecopy => "codecopy"
   | .returndatasize => "returndatasize" | .returndatacopy => "returndatacopy"
+  | .datasize => "datasize" | .dataoffset => "dataoffset" | .datacopy => "datacopy"
   | .address => "address" | .origin => "origin" | .caller => "caller"
   | .callvalue => "callvalue" | .gasprice => "gasprice" | .selfbalance => "selfbalance"
   | .coinbase => "coinbase" | .timestamp => "timestamp" | .number => "number"
@@ -449,6 +475,7 @@ def parse : Ident → Option Op
   | "calldatacopy" => some .calldatacopy | "codesize" => some .codesize
   | "codecopy" => some .codecopy | "returndatasize" => some .returndatasize
   | "returndatacopy" => some .returndatacopy
+  | "datasize" => some .datasize | "dataoffset" => some .dataoffset | "datacopy" => some .datacopy
   | "address" => some .address | "origin" => some .origin | "caller" => some .caller
   | "callvalue" => some .callvalue | "gasprice" => some .gasprice
   | "selfbalance" => some .selfbalance | "coinbase" => some .coinbase
