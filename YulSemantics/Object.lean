@@ -46,6 +46,30 @@ def bytes : Data → List UInt8
 /-- The size, in bytes, of a data segment. -/
 def size (d : Data) : Nat := d.bytes.length
 
+/-- Value of a hex digit character, or `none`. -/
+def hexVal (c : Char) : Option Nat :=
+  let n := c.toNat
+  if 48 ≤ n ∧ n ≤ 57 then some (n - 48)            -- '0'..'9'
+  else if 97 ≤ n ∧ n ≤ 102 then some (n - 97 + 10) -- 'a'..'f'
+  else if 65 ≤ n ∧ n ≤ 70 then some (n - 65 + 10)  -- 'A'..'F'
+  else none
+
+/-- Combine a list of nibbles into bytes (a trailing odd nibble is dropped). -/
+def pairNibbles : List Nat → List UInt8
+  | hi :: lo :: rest => UInt8.ofNat (hi * 16 + lo) :: pairNibbles rest
+  | _ => []
+
+/-- Parse a hex-literal body (e.g. `"00ff"`; non-hex characters are ignored) into bytes. -/
+def ofHex (s : String) : List UInt8 := pairNibbles (s.toList.filterMap hexVal)
+
+/-- Render a nibble (`0`–`15`) as a lowercase hex digit. -/
+def hexDigit (n : Nat) : Char :=
+  if n < 10 then Char.ofNat (48 + n) else Char.ofNat (97 + (n - 10))
+
+/-- Render bytes as a lowercase hex string (inverse of `ofHex` on well-formed input). -/
+def toHex (bs : List UInt8) : String :=
+  String.join (bs.map (fun b => String.ofList [hexDigit (b.toNat / 16), hexDigit (b.toNat % 16)]))
+
 end Data
 
 namespace Object
@@ -58,7 +82,7 @@ def subObject (o : Object Op) (name : String) : Option (Object Op) :=
 
 /-- The direct data segment with the given name, if any. -/
 def dataItem (o : Object Op) (name : String) : Option Data :=
-  (o.data.find? (fun p => p.1 = name)).map (·.2)
+  (o.dataSegs.find? (fun p => p.1 = name)).map (·.2)
 
 /-- Resolve a path relative to `o` to a sub-object (`.inl`) or a data segment (`.inr`).
 
@@ -91,7 +115,7 @@ def dataRefSize (o : Object Op) (ref : String) : Option Nat :=
 
 /-- All names directly referenceable from `o` (its sub-objects and data segments). -/
 def localNames (o : Object Op) : List String :=
-  o.subObjects.map (·.name) ++ o.data.map (·.1)
+  o.subObjects.map (·.name) ++ o.dataSegs.map (·.1)
 
 end Object
 

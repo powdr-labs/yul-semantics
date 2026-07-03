@@ -105,13 +105,14 @@ namespace Object
 variable {Op : Type}
 
 /-- The object's name. -/
-def name : Object Op → String                | .mk n _ _ _ => n
+def name : Object Op → String                    | .mk n _ _ _ => n
 /-- The object's top-level `code` block. -/
-def code : Object Op → Block Op              | .mk _ c _ _ => c
+def codeBlock : Object Op → Block Op             | .mk _ c _ _ => c
 /-- The object's nested sub-objects. -/
-def subObjects : Object Op → List (Object Op) | .mk _ _ s _ => s
-/-- The object's named data segments. -/
-def data : Object Op → List (String × Data)   | .mk _ _ _ d => d
+def subObjects : Object Op → List (Object Op)    | .mk _ _ s _ => s
+/-- The object's named data segments. (Named `dataSegs`, not `data`, since `data` is a reserved
+keyword in the DSL — see `YulSemantics.Syntax`.) -/
+def dataSegs : Object Op → List (String × Data)  | .mk _ _ _ d => d
 
 end Object
 

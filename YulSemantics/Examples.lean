@@ -172,7 +172,7 @@ def demoEnv : EVM.EvmState :=
 /-- End-to-end: the constructor copies its `runtime` bytes into memory and returns them —
 `datacopy`/`dataoffset`/`datasize` read the layout and the code region through the interpreter. -/
 example :
-    (Interp.run EVM.exec 100 demoObject.code demoEnv).map (·.2.1.halted)
+    (Interp.run EVM.exec 100 demoObject.codeBlock demoEnv).map (·.2.1.halted)
       = .ok (some (.ret, [0x60, 0x01, 0x60])) := by native_decide
 
 end YulSemantics.Examples
