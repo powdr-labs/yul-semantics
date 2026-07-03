@@ -15,3 +15,4 @@ import YulSemantics.Syntax
 import YulSemantics.PrettyPrint
 import YulSemantics.ObjectRun
 import YulSemantics.Examples
+import YulSemantics.FibExample
