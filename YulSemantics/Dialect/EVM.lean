@@ -104,37 +104,66 @@ inductive HaltKind
 
 /-- One emitted log record: topics plus a copy of the logged memory slice. -/
 structure LogEntry where
+  /-- The log topics (0–4 indexed words). -/
   topics : List U256
+  /-- The logged memory slice, as bytes. -/
   data   : List UInt8
   deriving Repr, DecidableEq, Inhabited
+
+-- The derived `Repr` for a structure never uses its `prec` argument, so exempt it from the
+-- `unusedArguments` linter.
+attribute [nolint unusedArguments] instReprLogEntry.repr
 
 /-- The (immutable) execution environment: transaction/block context, input data, and abstract
 read-only views of the world state. Addresses are represented as words. -/
 structure ExecEnv where
+  /-- Address of the executing account (`address()`). -/
   address       : U256 := 0
+  /-- Original transaction sender (`origin()`). -/
   origin        : U256 := 0
+  /-- Immediate caller (`caller()`). -/
   caller        : U256 := 0
+  /-- Value sent with the call (`callvalue()`). -/
   callvalue     : U256 := 0
+  /-- Gas price of the transaction (`gasprice()`). -/
   gasprice      : U256 := 0
+  /-- Balance of the executing account (`selfbalance()`). -/
   selfBalance   : U256 := 0
+  /-- Current block's beneficiary address (`coinbase()`). -/
   coinbase      : U256 := 0
+  /-- Current block timestamp (`timestamp()`). -/
   timestamp     : U256 := 0
+  /-- Current block number (`number()`). -/
   number        : U256 := 0
+  /-- Randomness beacon of the current block (`prevrandao()`). -/
   prevrandao    : U256 := 0
+  /-- Current block gas limit (`gaslimit()`). -/
   gaslimit      : U256 := 0
+  /-- Chain identifier (`chainid()`). -/
   chainid       : U256 := 0
+  /-- Current block base fee (`basefee()`). -/
   basefee       : U256 := 0
+  /-- Current block blob base fee (`blobbasefee()`). -/
   blobbasefee   : U256 := 0
+  /-- Call input data (`calldata`), as bytes. -/
   calldata      : List UInt8 := []
+  /-- Code of the executing account (`codecopy` source), as bytes. -/
   code          : List UInt8 := []
+  /-- Balance lookup for an arbitrary address (`balance(a)`). -/
   balanceOf     : U256 → U256 := fun _ => 0
+  /-- External code lookup for an address (`extcodecopy`/`extcodesize` source). -/
   extCodeOf     : U256 → List UInt8 := fun _ => []
+  /-- External code hash lookup for an address (`extcodehash(a)`). -/
   extCodeHashOf : U256 → U256 := fun _ => 0
+  /-- Block hash lookup by block number (`blockhash(n)`). -/
   blockHashOf   : U256 → U256 := fun _ => 0
+  /-- Blob hash lookup by index (`blobhash(i)`). -/
   blobHashOf    : U256 → U256 := fun _ => 0
   -- object-layout maps for `dataoffset`/`datasize`, keyed by the *name's* string-literal encoding
   -- (`litValue (.string name)`); supplied by the compiler's layout (`YulSemantics.Object`).
+  /-- Object-layout offset map for `dataoffset`, keyed by the name's string-literal encoding. -/
   dataOffset    : U256 → U256 := fun _ => 0
+  /-- Object-layout size map for `datasize`, keyed by the name's string-literal encoding. -/
   dataSize      : U256 → U256 := fun _ => 0
   deriving Inhabited
 
@@ -147,12 +176,19 @@ structure ExecEnv where
 * `logs` — emitted log records, in order.
 * `halted` — set once a halting built-in fires: its kind and the return/revert data. -/
 structure EvmState where
+  /-- Byte-addressable memory, unbounded, default `0`. -/
   memory     : Nat → UInt8
+  /-- Word-addressable persistent storage, default `0`. -/
   storage    : U256 → U256
+  /-- Word-addressable transient storage, default `0`. -/
   transient  : U256 → U256
+  /-- The immutable execution environment. -/
   env        : ExecEnv
+  /-- Return-data buffer (written by external calls, which are unmodeled here). -/
   returndata : List UInt8
+  /-- Emitted log records, in order. -/
   logs       : List LogEntry
+  /-- Set once a halting built-in fires: its kind and the return/revert data. -/
   halted     : Option (HaltKind × List UInt8)
 
 /-- The initial machine state: zeroed memory/storage, default environment, not halted. -/

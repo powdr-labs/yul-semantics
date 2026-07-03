@@ -25,8 +25,11 @@ Requires the Lean toolchain pinned in [`lean-toolchain`](./lean-toolchain) (mana
 
 ```sh
 lake exe cache get   # fetch prebuilt Mathlib oleans
-lake build
+lake build           # builds + type-checks; `warningAsError` makes any Lean warning fatal
+lake lint            # Batteries' environment linter (docstrings, unused arguments, …)
 ```
+
+CI runs both `lake build` and `lake lint`, so both must pass.
 
 ## Status
 

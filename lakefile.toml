@@ -5,6 +5,10 @@ version = "0.1.0"
 # clang jobs), which the Mathlib cache does not ship — that dominates CI time. Build the exe
 # explicitly with `lake build yul-semantics` if needed.
 defaultTargets = ["YulSemantics"]
+# `lake lint` runs Batteries' environment linter (`runLinter`) over the default targets — it checks
+# for missing docstrings, unused arguments, etc. that a plain `lake build` does not. CI runs this via
+# lean-action's `lint: "true"`. Suppress individual false positives with `@[nolint <linter>]`.
+lintDriver = "batteries/runLinter"
 
 [[require]]
 name = "mathlib"
