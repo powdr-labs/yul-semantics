@@ -13,6 +13,10 @@ rev = "v4.31.0"
 
 [[lean_lib]]
 name = "YulSemantics"
+# Treat every Lean warning (unused variables, deprecations, `sorry`, …) as a hard error so that a
+# plain `lake build` — the same command CI runs — fails on lint regressions. Scoped to this library,
+# so the Mathlib dependency (built with its own options) is unaffected.
+leanOptions = { warningAsError = true }
 
 [[lean_exe]]
 name = "yul-semantics"

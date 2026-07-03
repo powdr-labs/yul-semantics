@@ -23,7 +23,11 @@ jobs:
       # olean cache (so Mathlib is not recompiled from source), and runs `lake build` — which also
       # type-checks every `example`/`def` in the library, including the DSL round-trips and the
       # big-step smoke tests.
-      - name: Build (fetch Mathlib cache + lake build)
+      #
+      # Lint enforcement: the `YulSemantics` library sets `warningAsError = true` in lakefile.toml,
+      # so `lake build` fails on any Lean warning (unused variables, deprecations, `sorry`, …). That
+      # makes this build step the lint gate — no separate linter run is needed.
+      - name: Build (fetch Mathlib cache + lake build, warnings = errors)
         uses: leanprover/lean-action@v1
         with:
           use-mathlib-cache: "true"
