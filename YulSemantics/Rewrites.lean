@@ -26,7 +26,7 @@ open YulSemantics EVM
 /-! ### Inversion helpers for two-element EVM argument lists -/
 
 /-- Two literal arguments always evaluate to their values, unchanged state. -/
-private theorem two_lits_inv {funs V st l₁ l₂ r}
+theorem two_lits_inv {funs V st l₁ l₂ r}
     (h : EvalArgs EVM.evm funs V st [.lit l₁, .lit l₂] r) :
     r = .vals [EVM.litValue l₁, EVM.litValue l₂] st := by
   cases h with
@@ -45,7 +45,7 @@ private theorem two_lits_inv {funs V st l₁ l₂ r}
 
 /-- A variable and a literal always evaluate to the variable's value and the literal, unchanged
 state. -/
-private theorem var_lit_inv {funs V st x l r}
+theorem var_lit_inv {funs V st x l r}
     (h : EvalArgs EVM.evm funs V st [.var x, .lit l] r) :
     ∃ v, VEnv.get V x = some v ∧ r = .vals [v, EVM.litValue l] st := by
   cases h with

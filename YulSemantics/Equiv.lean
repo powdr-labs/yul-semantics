@@ -31,7 +31,8 @@ Two honest side conditions, both consequences of Yul's **function hoisting**:
 * There is **no `funDef` congruence yet**: rewriting inside a function *body* changes the `FDecl`
   stored by `hoist`, so relating the two programs requires a relation on function environments
   ("environments with pointwise-equivalent bodies") threaded through the judgment. That machinery
-  belongs with function-level optimizations (inlining) and is deferred.
+  belongs with function-level optimizations (inlining) and is deferred — see
+  `docs/fundef-congruence-gap.md` for a detailed analysis and proof plan.
 
 ## Behavior
 
@@ -353,22 +354,28 @@ private theorem loopImp {c₁ c₂ : Expr D.Op} {post₁ post₂ body₁ body₂
       exact Step.loopBodyHalt (hc.mp hcv) hnz (hbody.mp hb)
   all_goals exact nofun
 
-private theorem forImp {init} {c₁ c₂ : Expr D.Op} {post₁ post₂ body₁ body₂ : Block D.Op}
+private theorem forImp {init₁ init₂ : Block D.Op} {c₁ c₂ : Expr D.Op}
+    {post₁ post₂ body₁ body₂ : Block D.Op}
+    (hinit : EquivStmts D init₁ init₂) (hh : hoist D init₁ = hoist D init₂)
     (hc : EquivExpr D c₁ c₂) (hpost : EquivBlock D post₁ post₂) (hbody : EquivBlock D body₁ body₂)
-    {funs V st V' st' o} (h : ExecStmt D funs V st (.forLoop init c₁ post₁ body₁) V' st' o) :
-    ExecStmt D funs V st (.forLoop init c₂ post₂ body₂) V' st' o := by
+    {funs V st V' st' o} (h : ExecStmt D funs V st (.forLoop init₁ c₁ post₁ body₁) V' st' o) :
+    ExecStmt D funs V st (.forLoop init₂ c₂ post₂ body₂) V' st' o := by
   cases h with
-  | forLoop hinit hloop => exact Step.forLoop hinit (loopImp hc hpost hbody hloop rfl)
-  | forInitHalt hinit => exact Step.forInitHalt hinit
+  | forLoop hI hL =>
+      exact Step.forLoop (hh ▸ hinit.mp hI) (hh ▸ loopImp hc hpost hbody hL rfl)
+  | forInitHalt hI => exact Step.forInitHalt (hh ▸ hinit.mp hI)
 
-/-- Congruence: `for` with an equivalent condition, post-block, and body (the `init` block is
-fixed — it is both executed *and* hoisted, so changing it needs `EquivBlock.of_stmts`-style side
-conditions at the statement level). -/
-theorem EquivStmt.forLoop_congr (init : Block D.Op) {c₁ c₂ : Expr D.Op}
-    {post₁ post₂ body₁ body₂ : Block D.Op} (hc : EquivExpr D c₁ c₂)
-    (hpost : EquivBlock D post₁ post₂) (hbody : EquivBlock D body₁ body₂) :
-    EquivStmt D (.forLoop init c₁ post₁ body₁) (.forLoop init c₂ post₂ body₂) :=
+/-- Congruence: `for` with equivalent init/condition/post/body. Because `init` is both executed
+*and* hoisted (its function scope extends over the condition, post, and body), changing it carries
+the same `hoist`-agreement side condition as blocks. -/
+theorem EquivStmt.forLoop_congr {init₁ init₂ : Block D.Op} {c₁ c₂ : Expr D.Op}
+    {post₁ post₂ body₁ body₂ : Block D.Op}
+    (hinit : EquivStmts D init₁ init₂) (hh : hoist D init₁ = hoist D init₂)
+    (hc : EquivExpr D c₁ c₂) (hpost : EquivBlock D post₁ post₂)
+    (hbody : EquivBlock D body₁ body₂) :
+    EquivStmt D (.forLoop init₁ c₁ post₁ body₁) (.forLoop init₂ c₂ post₂ body₂) :=
   fun _ _ _ _ _ _ =>
-    ⟨forImp hc hpost hbody, forImp hc.symm hpost.symm hbody.symm⟩
+    ⟨forImp hinit hh hc hpost hbody,
+     forImp hinit.symm hh.symm hc.symm hpost.symm hbody.symm⟩
 
 end YulSemantics
