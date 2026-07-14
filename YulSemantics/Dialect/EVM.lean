@@ -14,8 +14,8 @@ about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the f
 ## Modeling status
 
 * **Fully modeled** (deterministic, local): arithmetic/comparison/bitwise/shifts/`clz`, `pop`,
-  `keccak256` (via the *opaque* `keccakBytes` — a deterministic but unspecified function, which is
-  all the meta-theory needs), memory (`mload`/`mstore`/`mstore8`/`mcopy`/`msize`, including the
+  `keccak256` (via `ExecEnv.keccakOf`, whose default is the deterministic but unspecified
+  `keccakBytes`), memory (`mload`/`mstore`/`mstore8`/`mcopy`/`msize`, including the
   active-memory high-water mark), storage and transient storage, calldata/code/returndata reads and
   copies, the execution-environment readers
   (`address` … `blobbasefee`, `selfbalance`), world-state reads via abstract environment maps
@@ -57,9 +57,8 @@ open YulSemantics
 /-- The EVM word: a 256-bit machine value. -/
 abbrev U256 := BitVec 256
 
-/-- Keccak-256 as a deterministic but *unspecified* function (Lean `opaque`): the meta-theory only
-needs determinism, never the concrete hash. Programs using `keccak256` cannot be run by
-`native_decide`/`#eval`. -/
+/-- Keccak-256 as a deterministic but *unspecified* function (Lean `opaque`). It is the default
+for `ExecEnv.keccakOf`; executable clients can supply a concrete implementation instead. -/
 opaque keccakBytes : List UInt8 → U256
 
 /-- The Yul EVM-dialect built-in operations (see the module docstring for coverage and deliberate
@@ -144,6 +143,9 @@ structure ExecEnv where
   calldata      : List UInt8 := []
   /-- The executing account's own code (`codesize`/`codecopy`). -/
   code          : List UInt8 := []
+  /-- Hash oracle used by `keccak256`. The default is abstract; executable clients can install a
+  concrete Keccak-256 implementation, while proofs can relate this oracle to another semantics. -/
+  keccakOf      : List UInt8 → U256 := keccakBytes
   /-- Balance lookup for any address (`balance`). -/
   balanceOf     : U256 → U256 := fun _ => 0
   /-- Code lookup for any address (`extcodesize`/`extcodecopy`). -/
@@ -358,7 +360,7 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
   | .sar        => bin (fun shift val => BitVec.sshiftRight val shift.toNat) args st
   -- hashing / value discard
   | .keccak256  => match args with
-      | [p, n] => some (.ok [keccakBytes (readBytes st.memory p.toNat n.toNat)]
+      | [p, n] => some (.ok [st.env.keccakOf (readBytes st.memory p.toNat n.toNat)]
           (touchMemory st p.toNat n.toNat))
       | _ => none
   | .pop        => match args with | [_] => some (.ok [] st) | _ => none

@@ -34,7 +34,9 @@ In place:
 
 - **Core semantics** — the big-step relational ground truth, a determinism proof, and a
   fuel-indexed executable interpreter with a proven adequacy (soundness + completeness) theorem.
-- **EVM dialect** — the full built-in set (through the upcoming hard fork), over `BitVec 256`.
+- **EVM dialect** — the full built-in set (through the upcoming hard fork), over `BitVec 256`,
+  including an environment-supplied Keccak oracle that is abstract by default and executable when
+  a client supplies a concrete implementation.
 - **Objects** — the Yul object layer (nested `code`/`data`/sub-objects): name resolution, a
   layout-consistency predicate relating a compiler's byte layout to an object, and a symbolic proof
   that the canonical constructor (`datacopy`/`return`) returns a data segment's bytes.
