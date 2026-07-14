@@ -162,6 +162,9 @@ names to values and function names to definitions.
 The `Dialect` classifies each built-in by effect — e.g. *pure*, *state-reading*, *state-writing*,
 *halting*, and whether it is *deterministic*. This classification is what makes optimization proofs
 sound (CSE/DCE/reordering may only move or drop calls with the right effects).
+The EVM dialect proves that these flags soundly over-approximate `stepOp`: deterministic operations
+have at most one result, non-writing operations preserve the entire state, and non-halting
+operations only return normally (`EVM.effects_sound`).
 
 Two built-ins interact with gas and must be classified as **impure / non-deterministic** even
 though we do not model gas:

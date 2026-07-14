@@ -495,7 +495,7 @@ def effects : Op → Effects
   | .create | .create2 | .selfdestruct => Effects.top
   -- halting
   | .stop | .invalid =>
-      { deterministic := true, reads := false, writes := false, halts := true }
+      { deterministic := true, reads := false, writes := true, halts := true }
   | .ret | .revert =>
       { deterministic := true, reads := true, writes := true, halts := true }
 
@@ -600,6 +600,33 @@ to the concrete `Value := BitVec 256` / `State := EvmState`. -/
 `stepOp`). -/
 theorem exec_lawful : exec.Lawful := fun _ _ _ _ => Iff.rfl
 
+set_option linter.unusedSimpArgs false in
+/-- The EVM dialect's effect flags soundly over-approximate its built-in semantics. In particular,
+operations marked non-writing return the input state unchanged, and operations marked non-halting
+can only produce a normal result. -/
+theorem effects_sound : evm.EffectsSound := by
+  refine ⟨?_, ?_, ?_⟩
+  · intro op _
+    exact exec_lawful.deterministic op
+  · intro op hw
+    cases op <;> simp [effects] at hw
+    all_goals
+      intro args st r hb
+      change stepOp _ args st = some r at hb
+      rcases args with _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, args⟩⟩⟩⟩ <;>
+        simp_all [stepOp, un, bin, ter, rd0, rd1] <;> subst r <;> rfl
+  · intro op hh
+    cases op <;> simp [effects] at hh
+    all_goals
+      intro args st r hb
+      change stepOp _ args st = some r at hb
+      rcases args with
+        _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, _ | ⟨e, _ | ⟨f, _ | ⟨g, args⟩⟩⟩⟩⟩⟩⟩ <;>
+        simp_all [stepOp, un, bin, ter, rd0, rd1] <;>
+        first
+        | (rcases hb with ⟨_, hb⟩; subst r; rfl)
+        | (subst r; rfl)
+
 /-! ### Smoke tests — structural dispatch reduces cleanly (no `maxRecDepth` gymnastics). -/
 
 example (x : U256) (st : EvmState) : stepOp .add [x, 0] st = some (.ok [x] st) := by simp [stepOp, bin]
@@ -607,5 +634,13 @@ example (x : U256) (st : EvmState) : stepOp .mul [x, 1] st = some (.ok [x] st) :
 example (x : U256) (st : EvmState) : stepOp .and [x, x] st = some (.ok [x] st) := by simp [stepOp, bin]
 example (st : EvmState) : stepOp .caller [] st = some (.ok [st.env.caller] st) := by simp [stepOp, rd0]
 example (st : EvmState) : stepOp .clz [0] st = some (.ok [256] st) := by simp [stepOp, un, clzVal]
+
+/-! Effect-classification guards for the distinctions most relevant to memory expansion and
+control flow. The general semantic guarantee is `effects_sound` above. -/
+
+example : (effects .msize).writes = false := rfl
+example : (effects .mload).writes = true := rfl
+example : (effects .stop).writes = true := rfl
+example : effects .gas = Effects.top := rfl
 
 end YulSemantics.EVM
