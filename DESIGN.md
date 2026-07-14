@@ -182,8 +182,8 @@ though we do not model gas:
 
 Target property: **semantic preservation** = functional equivalence of whole-program behavior. Tools:
 
-1. **Behavior / observation**: halting result (`return`/`revert`/`stop` + returndata), resulting
-   storage/logs, and terminate-vs-diverge. (No gas.)
+1. **Behavior / observation**: halting result (`return`/`revert`/`stop`/exception + returndata),
+   resulting storage/logs, and terminate-vs-diverge. (No gas.)
 2. **Contextual equivalence as a congruence**: expression- and statement-equivalence proven to be a
    *congruence* w.r.t. every AST constructor. Local rewrites (`add(x,0) → x`, constant folding, …)
    are proven locally and lifted into any context by this congruence lemma — the workhorse.
