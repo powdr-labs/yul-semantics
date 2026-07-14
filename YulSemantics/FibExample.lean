@@ -189,8 +189,11 @@ theorem fibContract_correct (st0 : EvmState) :
       [("b", BitVec.ofNat 256 (Nat.fib ((wordFrom st0.env.calldata 0).toNat + 1))),
        ("a", BitVec.ofNat 256 (Nat.fib (wordFrom st0.env.calldata 0).toNat)),
        ("n", wordFrom st0.env.calldata 0)]
-      { st0 with
-        memory := storeWord st0.memory 0 (BitVec.ofNat 256 (Nat.fib (wordFrom st0.env.calldata 0).toNat)),
+      { touchMemory
+          { touchMemory st0 0 32 with
+            memory := storeWord st0.memory 0
+              (BitVec.ofNat 256 (Nat.fib (wordFrom st0.env.calldata 0).toNat)) }
+          0 32 with
         halted := some (.ret, readBytes (storeWord st0.memory 0
           (BitVec.ofNat 256 (Nat.fib (wordFrom st0.env.calldata 0).toNat))) 0 32) }
       .halt := by

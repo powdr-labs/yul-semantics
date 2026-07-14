@@ -137,6 +137,32 @@ example :
     (Interp.run EVM.exec 100 (yul% { sstore(0, clz(1)) }) EvmState.init).map (·.2.1.storage 0)
       = .ok 255 := by native_decide
 
+/-- `msize()` starts at zero and observes expansion caused by a read, even though the bytes read
+are all zero. `mload(32)` touches bytes 32 through 63, activating two words. -/
+example :
+    (Interp.run EVM.exec 100 (yul% { pop(mload(32)) sstore(0, msize()) }) EvmState.init).map
+      (·.2.1.storage 0) = .ok 64 := by native_decide
+
+/-- Writing zero still expands memory: contents alone cannot be used to derive `msize()`. -/
+example :
+    (Interp.run EVM.exec 100 (yul% { mstore(64, 0) sstore(0, msize()) }) EvmState.init).map
+      (·.2.1.storage 0) = .ok 96 := by native_decide
+
+/-- A zero-length range never expands memory, even when its offset is large. -/
+example :
+    (Interp.run EVM.exec 100 (yul% { datacopy(0xffff, 0, 0) sstore(0, msize()) })
+      EvmState.init).map (·.2.1.storage 0) = .ok 0 := by native_decide
+
+/-- `mcopy` expands for its source range as well as its destination range. -/
+example :
+    (Interp.run EVM.exec 100 (yul% { mcopy(0, 96, 1) sstore(0, msize()) }) EvmState.init).map
+      (·.2.1.storage 0) = .ok 128 := by native_decide
+
+/-- Halting memory reads also update the high-water mark. -/
+example :
+    (Interp.run EVM.exec 100 (yul% { return(64, 1) }) EvmState.init).map
+      (·.2.1.activeWords) = .ok 3 := by native_decide
+
 /-! ### Objects (`YulSemantics.Object`) -/
 
 /-- A contract object `C` with a `runtime` sub-object and a named data segment. -/
