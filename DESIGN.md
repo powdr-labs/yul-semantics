@@ -166,15 +166,33 @@ The EVM dialect proves that these flags soundly over-approximate `stepOp`: deter
 have at most one result, non-writing operations preserve the entire state, and non-halting
 operations only return normally (`EVM.effects_sound`).
 
+External calls use the relational dialect directly. `EVM.evmWithCalls external` takes an
+`ExternalCalls` relation from a call request and pre-call state to a completed response. The
+response contains return data and the caller-observable post-world; it may therefore summarize an
+arbitrarily deep execution, including callbacks into the current contract. The semantics itself
+does not assume code for the target address. It only fixes the EVM call boundary:
+
+- caller memory is copied into the request before the external execution;
+- successful non-static calls commit the supplied post-world;
+- failure and `staticcall` roll back all supplied world changes;
+- return data is retained in full, while only its requested prefix is copied to caller memory; and
+- the call expression evaluates to the EVM success word.
+
+The executable `EVM.evm` keeps calls stuck. There is deliberately no universal executable choice
+for an open-world relation. Compiler correctness instead instantiates `external` with responses
+realized by complete target-EVM executions. Those executions may take any number of steps and use
+an arbitrarily deep call stack, so the simulation boundary does not impose a no-reentrancy or
+closed-world assumption.
+
 Two built-ins interact with gas and must be classified as **impure / non-deterministic** even
 though we do not model gas:
 
 - `gas()` returns *remaining* gas — a value that changes during execution. It is modeled as an
   oracle / non-deterministic read (never a constant; two `gas()` calls may differ, so they cannot be
   CSE'd).
-- gas forwarding + failure of `call`/`staticcall`/`delegatecall`: external call outcomes are modeled
-  as oracle inputs (they can depend on out-of-gas in the callee, which a gas-free model cannot
-  produce).
+- gas forwarding + failure of `call`/`callcode`/`staticcall`/`delegatecall`: external call outcomes
+  are modeled by the open-world relation (they can depend on out-of-gas in the callee, which a
+  gas-free model cannot itself calculate).
 
 ## Meta-theory / what we are building toward
 
