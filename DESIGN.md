@@ -269,6 +269,10 @@ the equivalence/simulation results above.
   `Interp.adequacy` / `Interp.run_adequacy`, instantiated hypothesis-free for EVM as
   `EVM.run_adequacy`. With determinism, the interpreter is pinned down as *the* computational
   content of the semantics.
+- **Executable Keccak-256** — *(done — `YulSemantics/Keccak.lean`)*. The relational EVM dialect
+  retains an opaque `keccakBytes`, so proofs depend only on determinism; `implemented_by` connects
+  native interpreter execution to a concrete original-Keccak sponge checked against the standard
+  empty and `abc` vectors plus a multi-block case.
 - **Phase 5** — optimization meta-theory. *(first cut done — `YulSemantics/Equiv.lean`,
   `YulSemantics/Rewrites.lean`)*. Pointwise semantic equivalences for all five syntactic classes
   (`EquivExpr`/`EquivArgs`/`EquivStmt`/`EquivStmts`/`EquivBlock`, each an equivalence relation);

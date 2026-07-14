@@ -34,7 +34,8 @@ In place:
 
 - **Core semantics** — the big-step relational ground truth, a determinism proof, and a
   fuel-indexed executable interpreter with a proven adequacy (soundness + completeness) theorem.
-- **EVM dialect** — the full built-in set (through the upcoming hard fork), over `BitVec 256`.
+- **EVM dialect** — the full built-in set (through the upcoming hard fork), over `BitVec 256`, with
+  executable Ethereum Keccak-256 behind an opaque proof interface.
 - **Objects** — the Yul object layer (nested `code`/`data`/sub-objects): name resolution, a
   layout-consistency predicate relating a compiler's byte layout to an object, and a symbolic proof
   that the canonical constructor (`datacopy`/`return`) returns a data segment's bytes.

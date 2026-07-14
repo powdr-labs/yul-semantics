@@ -137,6 +137,26 @@ example :
     (Interp.run EVM.exec 100 (yul% { sstore(0, clz(1)) }) EvmState.init).map (·.2.1.storage 0)
       = .ok 255 := by native_decide
 
+/-- The executable `keccak256` built-in uses Ethereum's original Keccak padding (empty vector). -/
+example :
+    (Interp.run EVM.exec 100 (yul% { sstore(0, keccak256(0, 0)) }) EvmState.init).map
+      (·.2.1.storage 0) =
+        .ok 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470 := by
+  native_decide
+
+/-- Standard Ethereum Keccak-256 `abc` vector, exercised through memory and the Yul interpreter. -/
+example :
+    (Interp.run EVM.exec 100
+      (yul% { mstore(0, "abc") sstore(0, keccak256(0, 3)) }) EvmState.init).map
+      (·.2.1.storage 0) =
+        .ok 0x4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45 := by
+  native_decide
+
+/-- A 200-byte vector crosses the 136-byte sponge rate and exercises multi-block absorption. -/
+example : keccakBytes (List.replicate 200 0xa3) =
+    0x3a57666b048777f2c953dc4456f45a2588e1cb6f2da760122d530ac2ce607d4a := by
+  native_decide
+
 /-- `msize()` starts at zero and observes expansion caused by a read, even though the bytes read
 are all zero. `mload(32)` touches bytes 32 through 63, activating two words. -/
 example :

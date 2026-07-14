@@ -1,5 +1,6 @@
 import Mathlib
 import YulSemantics.Dialect
+import YulSemantics.Keccak
 
 /-!
 # YulSemantics.Dialect.EVM
@@ -14,10 +15,9 @@ about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the f
 ## Modeling status
 
 * **Fully modeled** (deterministic, local): arithmetic/comparison/bitwise/shifts/`clz`, `pop`,
-  `keccak256` (via the *opaque* `keccakBytes` — a deterministic but unspecified function, which is
-  all the meta-theory needs), memory (`mload`/`mstore`/`mstore8`/`mcopy`/`msize`, including the
-  active-memory high-water mark), storage and transient storage, calldata/code/returndata reads and
-  copies, the execution-environment readers
+  `keccak256` (opaque to proofs, with an executable Ethereum Keccak implementation), memory
+  (`mload`/`mstore`/`mstore8`/`mcopy`/`msize`, including the active-memory high-water mark), storage
+  and transient storage, calldata/code/returndata reads and copies, the execution-environment readers
   (`address` … `blobbasefee`, `selfbalance`), world-state reads via abstract environment maps
   (`balance`, `extcodesize`/`extcodecopy`/`extcodehash`, `blockhash`, `blobhash`), `log0`–`log4`,
   the object-data ops (`dataoffset`/`datasize`/`datacopy`, layout-abstracted — see below and
@@ -57,9 +57,12 @@ open YulSemantics
 /-- The EVM word: a 256-bit machine value. -/
 abbrev U256 := BitVec 256
 
-/-- Keccak-256 as a deterministic but *unspecified* function (Lean `opaque`): the meta-theory only
-needs determinism, never the concrete hash. Programs using `keccak256` cannot be run by
-`native_decide`/`#eval`. -/
+/-- Executable realization of Ethereum Keccak-256, used only by native evaluation. -/
+def keccakBytesImpl (bytes : List UInt8) : U256 := BitVec.ofNat 256 (Keccak.digestNat bytes)
+
+/-- Keccak-256 as a deterministic but unspecified function in the logic. The meta-theory only
+needs determinism, while `implemented_by` lets the interpreter compute the real Ethereum hash. -/
+@[implemented_by keccakBytesImpl]
 opaque keccakBytes : List UInt8 → U256
 
 /-- The Yul EVM-dialect built-in operations (see the module docstring for coverage and deliberate
