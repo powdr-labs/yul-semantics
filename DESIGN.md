@@ -24,6 +24,10 @@ control-flow outcome. Consequences:
 The one place gas leaks into the *language* is via built-ins, handled in the Dialect (see §"Effect
 classification").
 
+Although gas costs are absent, the EVM dialect tracks the active-memory high-water mark because
+`msize()` exposes it as a functional program result. Memory-touching operations update that mark;
+no gas is charged for the expansion.
+
 ### 2. Ground truth is a big-step relational semantics
 
 The canonical definition of "what a Yul program means" is an **inductive big-step (natural)

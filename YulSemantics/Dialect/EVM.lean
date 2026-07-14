@@ -15,8 +15,9 @@ about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the f
 
 * **Fully modeled** (deterministic, local): arithmetic/comparison/bitwise/shifts/`clz`, `pop`,
   `keccak256` (via the *opaque* `keccakBytes` — a deterministic but unspecified function, which is
-  all the meta-theory needs), memory (`mload`/`mstore`/`mstore8`/`mcopy`), storage and transient
-  storage, calldata/code/returndata reads and copies, the execution-environment readers
+  all the meta-theory needs), memory (`mload`/`mstore`/`mstore8`/`mcopy`/`msize`, including the
+  active-memory high-water mark), storage and transient storage, calldata/code/returndata reads and
+  copies, the execution-environment readers
   (`address` … `blobbasefee`, `selfbalance`), world-state reads via abstract environment maps
   (`balance`, `extcodesize`/`extcodecopy`/`extcodehash`, `blockhash`, `blobhash`), `log0`–`log4`,
   the object-data ops (`dataoffset`/`datasize`/`datacopy`, layout-abstracted — see below and
@@ -27,10 +28,6 @@ about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the f
     (`DESIGN.md`), so it must not be given a deterministic `stepOp` (that would license CSE).
   - `call`/`callcode`/`delegatecall`/`staticcall`/`create`/`create2`/`selfdestruct` — external
     world interaction.
-  - `msize` — needs memory-size tracking; modeling it would force classifying every
-    memory-touching op as state-*writing* (expansion is observable through `msize`), destroying
-    the effect classification optimizations rely on. Like solc's optimizer, we special-case it
-    (solc restricts optimization in the presence of `msize`).
 * **Deliberately absent from `Op`**:
   - stack/control opcodes (`DUP*`, `SWAP*`, incl. EIP-663 `DUPN`/`SWAPN`, `PUSH*`, `POP`-as-stack-op,
     `JUMP*`, `PC`) — Yul has no stack; these are bytecode-level and belong to the EVM repo and the
@@ -168,6 +165,8 @@ structure ExecEnv where
 /-- The (gas-free) EVM machine state.
 
 * `memory` — byte-addressable, unbounded, default `0`.
+* `activeWords` — the number of 32-byte words made active by memory-touching operations; this is
+  separate from memory contents because even a zero read or write expands memory for `msize`.
 * `storage` / `transient` — word-addressable maps, default `0`.
 * `env` — the immutable execution environment.
 * `returndata` — the return-data buffer (written by external calls, which are unmodeled here).
@@ -176,6 +175,8 @@ structure ExecEnv where
 structure EvmState where
   /-- Byte-addressable memory, unbounded, default `0`. -/
   memory     : Nat → UInt8
+  /-- Number of active 32-byte memory words, as observed by `msize`. -/
+  activeWords : U256
   /-- Word-addressable persistent storage, default `0`. -/
   storage    : U256 → U256
   /-- Word-addressable transient storage (`tload`/`tstore`), default `0`. -/
@@ -191,7 +192,7 @@ structure EvmState where
 
 /-- The initial machine state: zeroed memory/storage, default environment, not halted. -/
 def EvmState.init : EvmState :=
-  { memory := fun _ => 0, storage := fun _ => 0, transient := fun _ => 0,
+  { memory := fun _ => 0, activeWords := 0, storage := fun _ => 0, transient := fun _ => 0,
     env := default, returndata := [], logs := [], halted := none }
 
 /-! ### Helpers -/
@@ -238,13 +239,31 @@ def copyInto (mem : Nat → UInt8) (dst src n : Nat) (data : List UInt8) : Nat �
 def copyWithin (mem : Nat → UInt8) (dst src n : Nat) : Nat → UInt8 :=
   fun a => if dst ≤ a ∧ a < dst + n then mem (src + (a - dst)) else mem a
 
+/-- Active-word count after touching the byte range `[offset, offset + size)`. A zero-length range
+does not expand memory, irrespective of its offset. -/
+def activeWordsAfter (curr offset size : Nat) : Nat :=
+  if size = 0 then curr else Nat.max curr ((offset + size - 1) / 32 + 1)
+
+/-- Update the active-memory high-water mark after touching one byte range. -/
+def touchMemory (st : EvmState) (offset size : Nat) : EvmState :=
+  { st with activeWords := BitVec.ofNat 256 (activeWordsAfter st.activeWords.toNat offset size) }
+
+/-- Update the active-memory high-water mark after touching two ranges (`mcopy` reads its source
+as well as writing its destination). -/
+def touchMemory2 (st : EvmState) (offset₁ size₁ offset₂ size₂ : Nat) : EvmState :=
+  touchMemory (touchMemory st offset₁ size₁) offset₂ size₂
+
+/-- The byte size of active memory, rounded to a multiple of 32 as required by `msize`. -/
+def memorySize (st : EvmState) : U256 := BitVec.ofNat 256 (32 * st.activeWords.toNat)
+
 /-- EIP-7939 `CLZ`: the number of leading zero bits (`256` for the zero word). -/
 def clzVal (a : U256) : U256 :=
   if a = 0 then 256 else BitVec.ofNat 256 (255 - a.toNat.log2)
 
 /-- Append a log record with the given topics and the memory slice `[p, p+n)`. -/
 def appendLog (st : EvmState) (topics : List U256) (p n : U256) : EvmState :=
-  { st with logs := st.logs ++ [⟨topics, readBytes st.memory p.toNat n.toNat⟩] }
+  { touchMemory st p.toNat n.toNat with
+    logs := st.logs ++ [⟨topics, readBytes st.memory p.toNat n.toNat⟩] }
 
 /-! ### Literals -/
 
@@ -340,18 +359,28 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
   | .sar        => bin (fun shift val => BitVec.sshiftRight val shift.toNat) args st
   -- hashing / value discard
   | .keccak256  => match args with
-      | [p, n] => some (.ok [keccakBytes (readBytes st.memory p.toNat n.toNat)] st)
+      | [p, n] => some (.ok [keccakBytes (readBytes st.memory p.toNat n.toNat)]
+          (touchMemory st p.toNat n.toNat))
       | _ => none
   | .pop        => match args with | [_] => some (.ok [] st) | _ => none
   -- memory
-  | .mload      => match args with | [p]    => some (.ok [loadWord st.memory p.toNat] st) | _ => none
-  | .mstore     => match args with | [p, v] => some (.ok [] { st with memory := storeWord st.memory p.toNat v }) | _ => none
-  | .mstore8    => match args with | [p, v] => some (.ok [] { st with memory := storeByte st.memory p.toNat v }) | _ => none
+  | .mload      => match args with
+      | [p] => some (.ok [loadWord st.memory p.toNat] (touchMemory st p.toNat 32))
+      | _ => none
+  | .mstore     => match args with
+      | [p, v] => some (.ok []
+          { touchMemory st p.toNat 32 with memory := storeWord st.memory p.toNat v })
+      | _ => none
+  | .mstore8    => match args with
+      | [p, v] => some (.ok []
+          { touchMemory st p.toNat 1 with memory := storeByte st.memory p.toNat v })
+      | _ => none
   | .mcopy      => match args with
       | [dst, src, n] =>
-          some (.ok [] { st with memory := copyWithin st.memory dst.toNat src.toNat n.toNat })
+          some (.ok [] { touchMemory2 st dst.toNat n.toNat src.toNat n.toNat with
+            memory := copyWithin st.memory dst.toNat src.toNat n.toNat })
       | _ => none
-  | .msize      => none   -- unmodeled: see the module docstring
+  | .msize      => rd0 (memorySize st) args st
   -- storage
   | .sload      => match args with | [k]    => some (.ok [st.storage k] st) | _ => none
   | .sstore     => match args with | [k, v] => some (.ok [] { st with storage := upd st.storage k v }) | _ => none
@@ -362,19 +391,22 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
   | .calldatasize   => rd0 (BitVec.ofNat 256 st.env.calldata.length) args st
   | .calldatacopy   => match args with
       | [dst, src, n] =>
-          some (.ok [] { st with memory := copyInto st.memory dst.toNat src.toNat n.toNat st.env.calldata })
+          some (.ok [] { touchMemory st dst.toNat n.toNat with
+            memory := copyInto st.memory dst.toNat src.toNat n.toNat st.env.calldata })
       | _ => none
   | .codesize       => rd0 (BitVec.ofNat 256 st.env.code.length) args st
   | .codecopy       => match args with
       | [dst, src, n] =>
-          some (.ok [] { st with memory := copyInto st.memory dst.toNat src.toNat n.toNat st.env.code })
+          some (.ok [] { touchMemory st dst.toNat n.toNat with
+            memory := copyInto st.memory dst.toNat src.toNat n.toNat st.env.code })
       | _ => none
   | .returndatasize => rd0 (BitVec.ofNat 256 st.returndata.length) args st
   | .returndatacopy => match args with
       | [dst, src, n] =>
           -- out-of-bounds returndata access is an exceptional halt in the EVM; modeled as stuck
           if src.toNat + n.toNat ≤ st.returndata.length then
-            some (.ok [] { st with memory := copyInto st.memory dst.toNat src.toNat n.toNat st.returndata })
+            some (.ok [] { touchMemory st dst.toNat n.toNat with
+              memory := copyInto st.memory dst.toNat src.toNat n.toNat st.returndata })
           else none
       | _ => none
   -- object data: `dataoffset`/`datasize` read the layout maps (keyed by the name's string-literal
@@ -383,7 +415,8 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
   | .dataoffset => rd1 (fun k => st.env.dataOffset k) args st
   | .datacopy   => match args with
       | [dst, off, n] =>
-          some (.ok [] { st with memory := copyInto st.memory dst.toNat off.toNat n.toNat st.env.code })
+          some (.ok [] { touchMemory st dst.toNat n.toNat with
+            memory := copyInto st.memory dst.toNat off.toNat n.toNat st.env.code })
       | _ => none
   -- execution environment
   | .address     => rd0 st.env.address args st
@@ -405,7 +438,8 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
   | .extcodesize => rd1 (fun a => BitVec.ofNat 256 (st.env.extCodeOf a).length) args st
   | .extcodecopy => match args with
       | [a, dst, src, n] =>
-          some (.ok [] { st with memory := copyInto st.memory dst.toNat src.toNat n.toNat (st.env.extCodeOf a) })
+          some (.ok [] { touchMemory st dst.toNat n.toNat with
+            memory := copyInto st.memory dst.toNat src.toNat n.toNat (st.env.extCodeOf a) })
       | _ => none
   | .extcodehash => rd1 st.env.extCodeHashOf args st
   | .blockhash   => rd1 st.env.blockHashOf args st
@@ -421,8 +455,14 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
   | .create | .create2 | .selfdestruct => none
   -- halting
   | .stop       => match args with | []     => some (.halt { st with halted := some (.stop, []) }) | _ => none
-  | .ret        => match args with | [p, s] => some (.halt { st with halted := some (.ret, readBytes st.memory p.toNat s.toNat) }) | _ => none
-  | .revert     => match args with | [p, s] => some (.halt { st with halted := some (.revert, readBytes st.memory p.toNat s.toNat) }) | _ => none
+  | .ret        => match args with
+      | [p, s] => some (.halt { touchMemory st p.toNat s.toNat with
+          halted := some (.ret, readBytes st.memory p.toNat s.toNat) })
+      | _ => none
+  | .revert     => match args with
+      | [p, s] => some (.halt { touchMemory st p.toNat s.toNat with
+          halted := some (.revert, readBytes st.memory p.toNat s.toNat) })
+      | _ => none
   | .invalid    => match args with | []     => some (.halt { st with halted := some (.invalid, []) }) | _ => none
 
 /-- Effect classification of each built-in (total on the finite `Op` enum). The flags
@@ -434,7 +474,7 @@ def effects : Op → Effects
   | .and | .or | .xor | .not | .byte | .shl | .shr | .sar | .pop =>
       { deterministic := true, reads := false, writes := false, halts := false }
   -- deterministic state reads
-  | .keccak256 | .mload | .msize | .sload | .tload
+  | .msize | .sload | .tload
   | .calldataload | .calldatasize | .codesize | .returndatasize
   | .address | .origin | .caller | .callvalue | .gasprice | .selfbalance
   | .coinbase | .timestamp | .number | .prevrandao | .gaslimit | .chainid
@@ -445,8 +485,9 @@ def effects : Op → Effects
   -- deterministic writes (no state read)
   | .mstore | .mstore8 | .sstore | .tstore =>
       { deterministic := true, reads := false, writes := true, halts := false }
-  -- deterministic read+write (copies and logs read memory/data and write memory/logs)
-  | .mcopy | .calldatacopy | .codecopy | .returndatacopy | .extcodecopy | .datacopy
+  -- deterministic read+write (memory reads can expand memory, observable through `msize`)
+  | .keccak256 | .mload | .mcopy | .calldatacopy | .codecopy | .returndatacopy
+  | .extcodecopy | .datacopy
   | .log0 | .log1 | .log2 | .log3 | .log4 =>
       { deterministic := true, reads := true, writes := true, halts := false }
   -- external interaction: conservative
@@ -456,7 +497,7 @@ def effects : Op → Effects
   | .stop | .invalid =>
       { deterministic := true, reads := false, writes := false, halts := true }
   | .ret | .revert =>
-      { deterministic := true, reads := true, writes := false, halts := true }
+      { deterministic := true, reads := true, writes := true, halts := true }
 
 /-! ### Frontend name mapping (used by the DSL in `YulSemantics.Syntax`; not by the semantics) -/
 

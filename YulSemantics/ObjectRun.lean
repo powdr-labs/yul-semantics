@@ -132,7 +132,7 @@ theorem constructorCode_returns (L : Layout) (n : Ident) (d : Data)
   -- remaining goal: the halted field of the (inferred) final state is `some (.ret, d.bytes)`
   have hsz : (L.dataSize (litValue (.string n))).toNat = d.size := by
     rw [hsize, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hlt]
-  simp only [Layout.initState, Layout.env]
+  simp only [Layout.initState, Layout.env, touchMemory]
   rw [readBytes_copyInto, hsz, hbytes]
 
 /-- The capstone, from consistency and membership: for any data segment of `o`, the canonical
