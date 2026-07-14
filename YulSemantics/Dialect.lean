@@ -126,9 +126,8 @@ def NonHalting (op : D.Op) : Prop :=
 /-- Soundness of the effect classification: each `false` flag is an actual guarantee about
 `Builtin`. Concrete dialects are expected to prove this; generic optimization lemmas take it as a
 hypothesis. Because `Op` is a finite enum for concrete dialects, this is provable by case analysis.
-
-TODO(Phase 5): establish `EffectsSound evm` for the EVM dialect. A `reads = false` guarantee
-(result independent of state) needs a notion of state observation and is deferred. -/
+The EVM instance proves it as `EVM.effects_sound`. A `reads = false` guarantee (result independent
+of state) needs a notion of state observation and is deferred. -/
 structure EffectsSound : Prop where
   det   : ∀ op, (D.effects op).deterministic = true → D.Deterministic op
   write : ∀ op, (D.effects op).writes = false → D.NonWriting op
