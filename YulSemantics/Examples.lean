@@ -163,6 +163,20 @@ example :
     (Interp.run EVM.exec 100 (yul% { return(64, 1) }) EvmState.init).map
       (·.2.1.activeWords) = .ok 3 := by native_decide
 
+/-- An out-of-bounds returndata copy exceptionally halts without expanding its destination range. -/
+example :
+    (Interp.run EVM.exec 100
+      (yul% { returndatacopy(0xffff, 1, 1) sstore(0, 1) })
+      { EvmState.init with returndata := [0xaa] }).map
+      (fun r => (r.2.1.halted, r.2.1.activeWords, r.2.1.storage 0)) =
+        .ok (some (.invalidMemoryAccess, []), 0, 0) := by native_decide
+
+/-- The exact-end zero-length returndata range is valid and does not expand memory. -/
+example :
+    (Interp.run EVM.exec 100
+      (yul% { returndatacopy(0xffff, 1, 0) sstore(0, msize()) })
+      { EvmState.init with returndata := [0xaa] }).map (·.2.1.storage 0) = .ok 0 := by native_decide
+
 /-! ### Objects (`YulSemantics.Object`) -/
 
 /-- A contract object `C` with a `runtime` sub-object and a named data segment. -/

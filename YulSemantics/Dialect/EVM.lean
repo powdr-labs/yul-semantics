@@ -46,9 +46,8 @@ the compiler supplies consistently with the object (`YulSemantics.Object`). Mode
 is keyed by its string-literal encoding `litValue (.string name)`; this is injective for the short
 identifiers Yul object/data names actually are (≤ 31 bytes, distinct), and aliases otherwise.
 
-Spec deviations (documented): `returndatacopy` out-of-bounds is *stuck* rather than an exceptional
-halt; `blockhash`'s 256-block window and `blobhash`'s index bound are abstracted into the
-environment maps. Gas is not modeled anywhere (`DESIGN.md` §1).
+Spec abstractions (documented): `blockhash`'s 256-block window and `blobhash`'s index bound are
+abstracted into the environment maps. Gas is not modeled anywhere (`DESIGN.md` §1).
 -/
 
 namespace YulSemantics.EVM
@@ -96,7 +95,7 @@ inductive Op
 
 /-- How a halting built-in terminated, stored in the machine state. -/
 inductive HaltKind
-  | stop | ret | revert | invalid
+  | stop | ret | revert | invalid | invalidMemoryAccess
   deriving Repr, DecidableEq, Inhabited
 
 /-- One emitted log record: topics plus a copy of the logged memory slice. -/
@@ -403,11 +402,10 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
   | .returndatasize => rd0 (BitVec.ofNat 256 st.returndata.length) args st
   | .returndatacopy => match args with
       | [dst, src, n] =>
-          -- out-of-bounds returndata access is an exceptional halt in the EVM; modeled as stuck
           if src.toNat + n.toNat ≤ st.returndata.length then
             some (.ok [] { touchMemory st dst.toNat n.toNat with
               memory := copyInto st.memory dst.toNat src.toNat n.toNat st.returndata })
-          else none
+          else some (.halt { st with halted := some (.invalidMemoryAccess, []) })
       | _ => none
   -- object data: `dataoffset`/`datasize` read the layout maps (keyed by the name's string-literal
   -- encoding); `datacopy` copies from the code region, exactly like `codecopy`.
@@ -486,10 +484,12 @@ def effects : Op → Effects
   | .mstore | .mstore8 | .sstore | .tstore =>
       { deterministic := true, reads := false, writes := true, halts := false }
   -- deterministic read+write (memory reads can expand memory, observable through `msize`)
-  | .keccak256 | .mload | .mcopy | .calldatacopy | .codecopy | .returndatacopy
-  | .extcodecopy | .datacopy
+  | .keccak256 | .mload | .mcopy | .calldatacopy | .codecopy | .extcodecopy | .datacopy
   | .log0 | .log1 | .log2 | .log3 | .log4 =>
       { deterministic := true, reads := true, writes := true, halts := false }
+  -- returndata bounds failure is an exceptional halt
+  | .returndatacopy =>
+      { deterministic := true, reads := true, writes := true, halts := true }
   -- external interaction: conservative
   | .gas | .call | .callcode | .delegatecall | .staticcall
   | .create | .create2 | .selfdestruct => Effects.top
@@ -622,10 +622,7 @@ theorem effects_sound : evm.EffectsSound := by
       change stepOp _ args st = some r at hb
       rcases args with
         _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, _ | ⟨e, _ | ⟨f, _ | ⟨g, args⟩⟩⟩⟩⟩⟩⟩ <;>
-        simp_all [stepOp, un, bin, ter, rd0, rd1] <;>
-        first
-        | (rcases hb with ⟨_, hb⟩; subst r; rfl)
-        | (subst r; rfl)
+        simp_all [stepOp, un, bin, ter, rd0, rd1] <;> subst r <;> rfl
 
 /-! ### Smoke tests — structural dispatch reduces cleanly (no `maxRecDepth` gymnastics). -/
 
@@ -640,6 +637,7 @@ control flow. The general semantic guarantee is `effects_sound` above. -/
 
 example : (effects .msize).writes = false := rfl
 example : (effects .mload).writes = true := rfl
+example : (effects .returndatacopy).halts = true := rfl
 example : (effects .stop).writes = true := rfl
 example : effects .gas = Effects.top := rfl
 
