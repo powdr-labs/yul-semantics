@@ -38,7 +38,9 @@ In place:
   including an environment-supplied Keccak oracle that is abstract by default and executable when
   a client supplies a concrete implementation. CALL and CREATE-family operations have additive
   open-world relational interpretations supporting arbitrary nested calls, creations, and
-  reentrancy; the executable dialect leaves them stuck.
+  reentrancy; the executable dialect leaves them stuck. `selfdestruct` deterministically transfers
+  the executing account's balance, records its deferred transaction-finalization destruction, and
+  halts, including the post-Cancun created-this-transaction/self-beneficiary distinction.
 - **Objects** — the Yul object layer (nested `code`/`data`/sub-objects): name resolution, a
   layout-consistency predicate relating a compiler's byte layout to an object, and a symbolic proof
   that the canonical constructor (`datacopy`/`return`) returns a data segment's bytes.
