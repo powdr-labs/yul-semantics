@@ -135,8 +135,7 @@ private def selfdestructRun :=
 example : selfdestructRun.map (·.2.1.env.selfBalance) = .ok 0 := by native_decide
 example : selfdestructRun.map (·.2.1.env.balanceOf 0x10) = .ok 0 := by native_decide
 example : selfdestructRun.map (·.2.1.env.balanceOf 0x20) = .ok 12 := by native_decide
-example : selfdestructRun.map (fun r =>
-    (r.2.1.selfdestructs.getD 0 0, r.2.1.selfdestructs.length)) = .ok (0x10, 1) := by
+example : selfdestructRun.map (·.2.1.selfdestructs) = .ok [(0x10, false)] := by
   native_decide
 example : selfdestructRun.map (·.2.1.storage 0) = .ok 0 := by native_decide
 example : selfdestructRun.map (fun r => match r.2.1.halted with

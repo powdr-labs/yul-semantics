@@ -30,9 +30,12 @@ about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the f
 * **Fully modeled (terminal world update)**: `selfdestruct` transfers the executing account's
   balance, records the destruction scheduled for transaction finalization, and halts. The
   environment's `createdThisTx` bit selects the post-Cancun self-beneficiary behavior.
-* **Enumerated but unmodeled** (`stepOp` returns `none`):
-  - `gas` — **deliberately** not a function of our state: it is nondeterministic by design
-    (`DESIGN.md`), so it must not be given a deterministic `stepOp` (that would license CSE).
+* **Open-world modeled (nondeterministic oracle)**: `gas` is **deliberately** not a function of our
+  state — it is nondeterministic by design (`DESIGN.md`). In the open-world dialects
+  (`evmWithExternal`/`evmWithCalls`) `builtinWithExternal .gas []` returns an *arbitrary* word and
+  leaves the state unchanged, modeling remaining gas as an oracle read. It must not be given a
+  deterministic `stepOp` (that would license CSE), so it remains stuck in the executable reference
+  dialect `evm` (`stepOp .gas = none`), which has no oracle to consult.
 * **Deliberately absent from `Op`**:
   - stack/control opcodes (`DUP*`, `SWAP*`, incl. EIP-663 `DUPN`/`SWAPN`, `PUSH*`, `POP`-as-stack-op,
     `JUMP*`, `PC`) — Yul has no stack; these are bytecode-level and belong to the EVM repo and the
@@ -199,7 +202,8 @@ structure ExecEnv where
   projections synchronized.
 * `returndata` — the return-data buffer (written by open-world calls and creations).
 * `logs` — emitted log records, in order.
-* `selfdestructs` — account addresses scheduled for transaction-finalization deletion, in order.
+* `selfdestructs` — accounts that executed `selfdestruct`, each paired with its `createdThisTx`
+  bit, in order (see the field docstring).
 * `halted` — set once a halting built-in fires: its kind and the return/revert data. -/
 structure EvmState where
   /-- Byte-addressable memory, unbounded, default `0`. -/
@@ -216,9 +220,12 @@ structure EvmState where
   returndata : List UInt8
   /-- Emitted log records, in order. -/
   logs       : List LogEntry
-  /-- Accounts that have executed `selfdestruct`, in execution order. Deletion is deferred until
-  transaction finalization and is fork-dependent. -/
-  selfdestructs : List U256
+  /-- Accounts that have executed `selfdestruct`, in execution order. Each entry pairs the account
+  address with its `createdThisTx` bit at destruction time: post-EIP-6780 (Cancun) the account is
+  actually deleted at transaction finalization only when that bit is `true` (created in this
+  transaction); when it is `false` the `selfdestruct` performed a balance transfer only and leaves
+  the account in place. Recording the bit keeps the schedule lossless for a transaction semantics. -/
+  selfdestructs : List (U256 × Bool)
   /-- Set once a halting built-in fires: its kind and the return/revert data. -/
   halted     : Option (HaltKind × List UInt8)
 
@@ -226,6 +233,56 @@ structure EvmState where
 def EvmState.init : EvmState :=
   { memory := fun _ => 0, activeWords := 0, storage := fun _ => 0, transient := fun _ => 0,
     env := default, returndata := [], logs := [], selfdestructs := [], halted := none }
+
+/-! ### Frame-boundary commit vs. rollback
+
+`stepOp` records only *which* halt fired (its `HaltKind` and exposed data) in `st.halted`; it does
+**not** itself undo the storage/transient/log/balance/selfdestruct effects a frame accumulated
+before halting. That is correct for a *sub-frame*, whose consequences are resolved by `finishCall`
+on return, but the top-level frame's effects are only resolved at the **observation** boundary,
+here.
+
+Real EVM keeps a frame's committed world changes only when it halts *normally* — `stop`/`return` (or
+runs off the end) — or via `selfdestruct`. A `revert`, an `invalid` (exceptional halt), or the
+out-of-bounds `returndatacopy` (`invalidMemoryAccess`) discards **all** of the frame's changes;
+only the exposed return/revert data survives. `HaltKind.commits`/`committedState` below apply this
+rollback at the boundary, keeping the `Step` judgment (which is shared with sub-frames) untouched. -/
+
+/-- Whether a halt *commits* the frame's accumulated world changes (`stop`/`return`/`selfdestruct`),
+as opposed to discarding them (`revert`/`invalid`/`invalidMemoryAccess`). -/
+def HaltKind.commits : HaltKind → Bool
+  | .stop | .ret | .selfdestruct => true
+  | .revert | .invalid | .invalidMemoryAccess => false
+
+/-- The frame's *observable* state at its boundary, given its initial state `st0` and its final
+`Step` state `st'`.
+
+* Not halted, or halted with a committing kind (`stop`/`return`/`selfdestruct`): the frame commits,
+  so the observation is `st'` unchanged.
+* Halted with a non-committing kind (`revert`/`invalid`/`invalidMemoryAccess`): every accumulated
+  effect is rolled back to `st0`, carrying over only the outcome marker (`halted`) and the exposed
+  return data (`returndata`) — exactly what real EVM leaves visible to the caller/transaction. -/
+def committedState (st0 st' : EvmState) : EvmState :=
+  match st'.halted with
+  | none => st'
+  | some (k, _) =>
+      if k.commits then st'
+      else { st0 with halted := st'.halted, returndata := st'.returndata }
+
+@[simp] theorem committedState_none {st0 st' : EvmState} (h : st'.halted = none) :
+    committedState st0 st' = st' := by simp [committedState, h]
+
+/-- A committing halt commits `st'` unchanged. Not a `simp` lemma: its left-hand side
+`committedState st0 st'` does not determine `k`/`data` (they appear only in the hypotheses), so
+`simp` could never apply it — invoke it by name or pass it explicitly to `simp`. -/
+theorem committedState_commit {st0 st' : EvmState} {k data}
+    (h : st'.halted = some (k, data)) (hk : k.commits = true) :
+    committedState st0 st' = st' := by simp [committedState, h, hk]
+
+theorem committedState_rollback {st0 st' : EvmState} {k data}
+    (h : st'.halted = some (k, data)) (hk : k.commits = false) :
+    committedState st0 st' = { st0 with halted := st'.halted, returndata := st'.returndata } := by
+  simp [committedState, h, hk]
 
 /-! ### Helpers -/
 
@@ -258,6 +315,19 @@ def projectedCodeHash (env : ExecEnv) (balanceOf : U256 → U256) (address : U25
   if (env.nonceOf address).toNat = 0 ∧ (balanceOf address).toNat = 0 ∧
       (env.extCodeOf address).length = 0 then 0
   else env.keccakOf (env.extCodeOf address)
+
+/-- Intended world-consistency invariants for an execution environment. These are *not* enforced by
+the state type (the fields are independent maps), but a concrete world always satisfies them, so
+`WF` is provided as an optional hypothesis for downstream proofs.
+
+* `extCodeHashOf` agrees with the derived `projectedCodeHash` rule (empty account ⇒ `0`; otherwise
+  the Keccak hash of the account's code). This is the invariant the `extcodehash` opcode now reads
+  through directly, so it rules out worlds the EVM never has (a code-hash decoupled from the code,
+  nonce, and balance).
+* `selfBalance` is the balance the global map assigns to the executing account. -/
+def ExecEnv.WF (env : ExecEnv) : Prop :=
+  (∀ a, env.extCodeHashOf a = projectedCodeHash env env.balanceOf a) ∧
+    env.selfBalance = env.balanceOf env.address
 
 /-- The `k`-th least-significant byte of a word. -/
 @[inline] def byteAt (v : U256) (k : Nat) : UInt8 := UInt8.ofNat (v >>> (8 * k)).toNat
@@ -348,7 +418,7 @@ def finishSelfdestruct (st : EvmState) (beneficiary : U256) : EvmState :=
       balanceOf := balances
       extCodeHashOf := codeHashes
       selfBalance }
-    selfdestructs := st.selfdestructs ++ [self]
+    selfdestructs := st.selfdestructs ++ [(self, st.env.createdThisTx)]
     halted := some (.selfdestruct, []) }
 
 /-! ### Open-world external calls -/
@@ -400,8 +470,9 @@ structure CallWorld where
   transient     : U256 → U256
   /-- Log records emitted by the external execution, in order. -/
   logs          : List LogEntry
-  /-- Destructions scheduled by the external execution, in order. -/
-  selfdestructs : List U256
+  /-- Destructions scheduled by the external execution, in order. Each pairs the destroyed account
+  with its `createdThisTx` bit (see `EvmState.selfdestructs`). -/
+  selfdestructs : List (U256 × Bool)
 
 /-- The caller-visible result of a completed external execution. A false `success` represents
 revert, exceptional failure, depth failure, or another EVM call failure. `returndata` is preserved
@@ -454,14 +525,18 @@ structure CreateRequest where
 
 /-- The caller-visible result of a completed creation attempt. `some address` means deployment
 succeeded (including the mathematically possible address word `0`); `none` means the opcode pushes
-zero. `world` is the actually committed post-world on every path, including a creator nonce bump
-that survives collision, init-code revert, or deployment failure. -/
+zero. `world` describes the successful post-world in full; on failure (`created = none`) only the
+creator nonce bump survives (`world.nonceOf`), while all other components of `world` are discarded
+by `finishCreate`, which rolls back to the pre-state. This mirrors real EVM: a failed create
+(collision, init-code revert, or deployment failure) reverts every state change except the
+creator's nonce (and gas). -/
 structure CreateResponse where
   /-- The deployed address on success, or `none` when the opcode returns zero. -/
   created    : Option U256
   /-- Revert data on failure. Successful creation exposes an empty return-data buffer. -/
   returndata : List UInt8
-  /-- The committed post-world, including effects that survive failed deployment. -/
+  /-- The successful post-world in full; on failure only its `nonceOf` (the creator nonce bump) is
+  committed by `finishCreate`. -/
   world      : CallWorld
 
 /-- Open-world interpretation of contract creation. The relation may summarize arbitrary init-code
@@ -544,22 +619,39 @@ def CreateResponse.visibleReturnData (response : CreateResponse) : List UInt8 :=
   if response.created.isSome then [] else response.returndata
 
 /-- Complete a creation attempt after the external relation supplies its response. Reading init
-code expands caller memory. The response world is always the committed post-world because the
-creator nonce can advance even when deployment returns zero. -/
+code expands caller memory. On success (`created.isSome`) the full response world is installed. On
+failure (`created = none`) the creation is rolled back structurally: the pre-state's storage,
+transient storage, balances, logs, and every other component are preserved, and only the creator
+nonce bump (`response.world.nonceOf`) is committed. This makes the failed-create rollback provable
+(`finishCreate_failure_storage`) rather than relying on the external relation to reconstruct the
+pre-state in `response.world`. -/
 def finishCreate (st : EvmState) (response : CreateResponse) (offset size : Nat) : EvmState :=
-  { response.world.install (touchMemory st offset size) with
-    returndata := response.visibleReturnData }
+  let touched := touchMemory st offset size
+  let committed :=
+    if response.created.isSome then response.world.install touched
+    else { touched with env := { touched.env with nonceOf := response.world.nonceOf } }
+  { committed with returndata := response.visibleReturnData }
 
 @[simp] theorem finishCreate_returndata (st response offset size) :
     (finishCreate st response offset size).returndata = response.visibleReturnData := rfl
 
-@[simp] theorem finishCreate_storage (st response offset size key) :
-    (finishCreate st response offset size).storage key = response.world.storage key := by
-  simp [finishCreate, CallWorld.install]
+/-- A failed create rolls back storage to the pre-state. -/
+@[simp] theorem finishCreate_failure_storage (st response offset size key)
+    (h : response.created = none) :
+    (finishCreate st response offset size).storage key = st.storage key := by
+  simp [finishCreate, h, touchMemory]
 
+/-- A successful create installs the response world's storage. -/
+@[simp] theorem finishCreate_success_storage (st response offset size key)
+    (h : response.created.isSome = true) :
+    (finishCreate st response offset size).storage key = response.world.storage key := by
+  simp [finishCreate, h, CallWorld.install]
+
+/-- The creator nonce bump is committed on both the success and failure paths. -/
 @[simp] theorem finishCreate_nonce (st response offset size address) :
     (finishCreate st response offset size).env.nonceOf address = response.world.nonceOf address := by
-  simp [finishCreate, CallWorld.install]
+  simp only [finishCreate]
+  split <;> simp [CallWorld.install]
 
 @[simp] theorem finishCall_returndata (kind st response inputOffset inputSize outputOffset
     outputSize) :
@@ -780,7 +872,7 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
           some (.ok [] { touchMemory st dst.toNat n.toNat with
             memory := copyInto st.memory dst.toNat src.toNat n.toNat (st.env.extCodeOf a) })
       | _ => none
-  | .extcodehash => rd1 st.env.extCodeHashOf args st
+  | .extcodehash => rd1 (fun a => projectedCodeHash st.env st.env.balanceOf a) args st
   | .blockhash   => rd1 st.env.blockHashOf args st
   | .blobhash    => rd1 st.env.blobHashOf args st
   -- logging
@@ -877,6 +969,12 @@ def builtinWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
           if st.env.static then result = .halt { st with halted := some (.invalid, []) }
           else externalCreate creates .create2 value offset size (some salt) st result
       | _ => False
+  -- `gas()` is a nondeterministic oracle read: it returns an arbitrary remaining-gas word and
+  -- leaves the state unchanged. It is deliberately absent from the deterministic `stepOp` (which
+  -- has no oracle), so it lives only in this open-world relation. See `DESIGN.md` §1.
+  | .gas => match args with
+      | []   => ∃ g : U256, result = .ok [g] st
+      | _    => False
   | _ => stepOp op args st = some result
 
 /-- Backwards-compatible call-only built-in relation. -/
@@ -887,17 +985,27 @@ def builtin (external : ExternalCalls) :
 /-- Effect classification of each built-in (total on the finite `Op` enum). The flags
 over-approximate (see `Effects`); the unmodeled gas read gets the conservative `top`.
 
+On the `reads` column specifically (`reads = true` ⇔ the built-in *observes* the prior state; see the
+`Effects.reads` field doc for the precise, still-unproven-in-Lean meaning): note that `reads` is
+independent of `writes`. The blind-write entries below — `mstore`/`mstore8`/`sstore`/`tstore` — are
+deliberately `reads := false` **despite** `writes := true`, because a blind store's return values
+(none) and the memory/storage delta it applies are fixed by its arguments and never consult the prior
+contents of that slot; this is the intended meaning, not an oversight. The dual is
+`mload`/`keccak256`/`sload`/`*copy`, which read state contents and so are `reads := true`. This whole
+table has been audited against that meaning and is internally consistent; a machine-checked `reads`
+soundness proof is future work (again, see `Effects.reads`).
+
 Because `effects` cannot observe `ExecEnv.static`, the state-modifying built-ins that halt only in a
 static frame (`sstore`/`tstore`/`log0`–`log4`, and the call/create family) must carry `halts := true`
 to remain a sound over-approximation. This is faithful but slightly weakens the non-halting guarantee
 for these writers — a deliberate tradeoff of modeling static-call write protection. -/
 def effects : Op → Effects
-  -- pure computation
+  -- pure computation: no state at all → reads := false
   | .add | .sub | .mul | .div | .sdiv | .mod | .smod | .addmod | .mulmod | .exp
   | .signextend | .clz | .lt | .gt | .slt | .sgt | .eq | .iszero
   | .and | .or | .xor | .not | .byte | .shl | .shr | .sar | .pop =>
       { deterministic := true, reads := false, writes := false, halts := false }
-  -- deterministic state reads
+  -- deterministic state reads: result depends on current state → reads := true
   | .msize | .sload | .tload
   | .calldataload | .calldatasize | .codesize | .returndatasize
   | .address | .origin | .caller | .callvalue | .gasprice | .selfbalance
@@ -906,32 +1014,39 @@ def effects : Op → Effects
   | .balance | .extcodesize | .extcodehash | .blockhash | .blobhash
   | .datasize | .dataoffset =>
       { deterministic := true, reads := true, writes := false, halts := false }
-  -- deterministic memory writes (never halt)
+  -- deterministic *blind* memory writes: the stored bytes come from the arguments, the prior
+  -- contents are never observed → reads := false even though writes := true (see the doc comment
+  -- above). Memory writes are permitted in a static frame, so they never halt.
   | .mstore | .mstore8 =>
       { deterministic := true, reads := false, writes := true, halts := false }
-  -- deterministic state writes that halt exceptionally in a static frame (write protection)
+  -- deterministic *blind* state writes (reads := false, as above); but they halt exceptionally in a
+  -- static frame (write protection), so halts := true
   | .sstore | .tstore =>
       { deterministic := true, reads := false, writes := true, halts := true }
-  -- deterministic read+write (memory reads can expand memory, observable through `msize`)
+  -- deterministic read+write: these move/hash *current* state contents, and memory reads can expand
+  -- memory (observable through `msize`) → reads := true, writes := true
   | .keccak256 | .mload | .mcopy | .calldatacopy | .codecopy | .extcodecopy | .datacopy =>
       { deterministic := true, reads := true, writes := true, halts := false }
-  -- logging reads memory and writes logs; it halts exceptionally in a static frame
+  -- logging reads memory contents and writes logs; it halts exceptionally in a static frame
   | .log0 | .log1 | .log2 | .log3 | .log4 =>
       { deterministic := true, reads := true, writes := true, halts := true }
-  -- returndata bounds failure is an exceptional halt
+  -- reads returndata; returndata bounds failure is an exceptional halt
   | .returndatacopy =>
       { deterministic := true, reads := true, writes := true, halts := true }
-  -- calls and creates return normally, but may halt exceptionally under static write protection
+  -- calls and creates return normally to the caller but otherwise have every effect (they observe
+  -- and mutate the world) → reads := true; they may halt exceptionally under static write protection
   | .call | .callcode | .delegatecall | .staticcall | .create | .create2 =>
       { deterministic := false, reads := true, writes := true, halts := true }
   -- remaining gas interaction: conservative
   | .gas => Effects.top
-  -- deterministic terminal world update
+  -- deterministic terminal world update: reads balance to transfer → reads := true
   | .selfdestruct =>
       { deterministic := true, reads := true, writes := true, halts := true }
-  -- halting
+  -- halting with no return data: sets the halt payload (writes := true) but does not consult prior
+  -- state to do so (reads := false)
   | .stop | .invalid =>
       { deterministic := true, reads := false, writes := true, halts := true }
+  -- halting with return/revert data read from memory → reads := true
   | .ret | .revert =>
       { deterministic := true, reads := true, writes := true, halts := true }
 
@@ -1085,7 +1200,7 @@ theorem effects_sound_withExternal (calls : ExternalCalls) (creates : ExternalCr
   refine ⟨?_, ?_, ?_⟩
   · intro op hd
     have hlocal := effects_sound.det op hd
-    cases op <;> simp [effects] at hd
+    cases op <;> simp [effects, Effects.top] at hd
     all_goals
       intro args st r₁ r₂ h₁ h₂
       apply hlocal args st r₁ r₂
@@ -1093,7 +1208,7 @@ theorem effects_sound_withExternal (calls : ExternalCalls) (creates : ExternalCr
       · simpa [evmWithExternal, builtinWithExternal] using h₂
   · intro op hw
     have hlocal := effects_sound.write op hw
-    cases op <;> simp [effects] at hw
+    cases op <;> simp [effects, Effects.top] at hw
     all_goals
       intro args st r h
       apply hlocal args st r
@@ -1122,6 +1237,18 @@ example (x : U256) (st : EvmState) : stepOp .mul [x, 1] st = some (.ok [x] st) :
 example (x : U256) (st : EvmState) : stepOp .and [x, x] st = some (.ok [x] st) := by simp [stepOp, bin]
 example (st : EvmState) : stepOp .caller [] st = some (.ok [st.env.caller] st) := by simp [stepOp, rd0]
 example (st : EvmState) : stepOp .clz [0] st = some (.ok [256] st) := by simp [stepOp, un, clzVal]
+
+/-- `extcodehash` reads through `projectedCodeHash`, tying the code hash to the account's code,
+nonce, and balance rather than an unconstrained map. -/
+example (st : EvmState) (a : U256) :
+    stepOp .extcodehash [a] st =
+      some (.ok [projectedCodeHash st.env st.env.balanceOf a] st) := by simp [stepOp, rd1]
+
+/-- Under `ExecEnv.WF`, the `projectedCodeHash`-based `extcodehash` agrees with the raw
+`extCodeHashOf` map, so routing through the derived rule loses no behavior on consistent worlds. -/
+example (st : EvmState) (a : U256) (hwf : st.env.WF) :
+    stepOp .extcodehash [a] st = some (.ok [st.env.extCodeHashOf a] st) := by
+  simp [stepOp, rd1, hwf.1 a]
 
 /-! Effect-classification guards for the distinctions most relevant to memory expansion and
 control flow. The general semantic guarantee is `effects_sound` above. -/
@@ -1188,6 +1315,27 @@ example (external : ExternalCalls) (st : EvmState) (response : CallResponse)
   simp only [evmWithCalls, evmWithExternal, builtinWithExternal, if_neg hc]
   exact ⟨response, hresponse, rfl⟩
 
+/-! Open-world `gas()` oracle guards. In the open-world dialect `gas()` may return any word while
+leaving the state unchanged; it remains stuck in the executable reference dialect. -/
+
+example (external : ExternalCalls) (st : EvmState) (g : U256) :
+    (evmWithCalls external).Builtin .gas [] st (.ok [g] st) := ⟨g, rfl⟩
+
+example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState) (g : U256) :
+    (evmWithExternal calls creates).Builtin .gas [] st (.ok [g] st) := ⟨g, rfl⟩
+
+example (st : EvmState) : stepOp .gas [] st = none := rfl
+
+-- The idiomatic `call(gas(), …)` pattern now has a derivation: pick the gas oracle's word, then
+-- take any external response for the call it feeds.
+example (external : ExternalCalls) (st : EvmState) (g : U256) (response : CallResponse)
+    (hresponse : external.Call
+      { kind := .call, gas := g, target := 2, value := 3, input := [] } st response) :
+    (evmWithCalls external).Builtin .gas [] st (.ok [g] st) ∧
+    (evmWithCalls external).Builtin .call [g, 2, 3, 0, 0, 0, 0] st
+      (.ok [response.flag] (finishCall .call st response 0 0 0 0)) :=
+  ⟨⟨g, rfl⟩, response, hresponse, rfl⟩
+
 /-! Open-world creation guards. -/
 
 example (response : CreateResponse) (address : U256)
@@ -1202,6 +1350,24 @@ example (st : EvmState) (response : CreateResponse) (address : U256)
     (h : response.created = some address) :
     (finishCreate st response 0 0).returndata = [] := by
   simp [CreateResponse.visibleReturnData, h]
+
+/-- A failed create (`created = none`) rolls storage back to the pre-state: only the creator nonce
+survives, exactly as CALL rolls back on failure. -/
+example (st : EvmState) (response : CreateResponse) (key : U256)
+    (h : response.created = none) :
+    (finishCreate st response 0 0).storage key = st.storage key := by
+  simp [finishCreate, h, touchMemory]
+
+/-- A successful create installs the response world's storage. -/
+example (st : EvmState) (response : CreateResponse) (key address : U256)
+    (h : response.created = some address) :
+    (finishCreate st response 0 0).storage key = response.world.storage key := by
+  simp [finishCreate, CallWorld.install, h]
+
+/-- The creator nonce bump is committed on both paths. -/
+example (st : EvmState) (response : CreateResponse) (a : U256) :
+    (finishCreate st response 0 0).env.nonceOf a = response.world.nonceOf a := by
+  simp
 
 example (creates : ExternalCreates) (st : EvmState) (response : CreateResponse)
     (hstatic : st.env.static = false)

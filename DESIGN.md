@@ -207,6 +207,17 @@ realized by complete target-EVM executions. Those executions may take any number
 an arbitrarily deep call stack, so the simulation boundary does not impose a no-reentrancy or
 closed-world assumption.
 
+**Meta-theory scope (which guarantees apply to which dialect).** The determinism lemma, the
+fuel-indexed interpreter, and the adequacy theorem are all stated for the **closed-world local
+dialect `EVM.evm`**. They do **not** apply to the **open-world `EVM.evmWithExternal` (call/create)**:
+that dialect is relational and may be non-deterministic (the environment picks the external response),
+so it is not covered by determinism; and because there is no universal executable choice for the
+open-world relation, it has neither an interpreter nor an adequacy result — the executable dialect
+leaves `gas()` and the whole call/create family stuck. The one meta-theoretic property that *is*
+proven for the open world is effect-classification soundness (`EVM.effects_sound_withExternal`).
+Consequently, programs that call `gas()` or perform external calls/creations are outside the
+determinism and adequacy guarantees.
+
 `selfdestruct` is local and terminal rather than open-world: it does not invoke unknown code. Its
 executable semantics transfers the current balance, appends the executing address to the ordered
 destruction schedule, and halts. `ExecEnv.createdThisTx` selects the post-Cancun behavior when the
@@ -220,10 +231,39 @@ though we do not model gas:
 
 - `gas()` returns *remaining* gas — a value that changes during execution. It is modeled as an
   oracle / non-deterministic read (never a constant; two `gas()` calls may differ, so they cannot be
-  CSE'd).
+  CSE'd). Concretely, the open-world dialects (`evmWithExternal`/`evmWithCalls`) interpret
+  `gas()` via `builtinWithExternal`: it returns an *arbitrary* word and leaves the state unchanged,
+  so `call(gas(), …)` — the idiomatic call pattern — is derivable. The executable reference dialect
+  `evm` has no oracle, so `gas()` stays stuck there (`stepOp .gas = none`); this is why `evm` is
+  deterministic while the open-world dialects are not.
 - gas forwarding + failure of `call`/`callcode`/`staticcall`/`delegatecall`: external call outcomes
   are modeled by the open-world relation (they can depend on out-of-gas in the callee, which a
   gas-free model cannot itself calculate).
+
+### Frame-boundary observation (commit vs. rollback)
+
+`stepOp` records only *which* halt fired — its `HaltKind` and exposed return/revert data — in
+`st.halted`. It deliberately does **not** undo the storage/transient/log/balance/selfdestruct
+effects a frame accumulated before halting, because the `Step` judgment is shared between the
+top-level frame and every sub-frame. For a **sub-frame**, `finishCall` (and `finishCreate`) already
+resolve this on return: `revert`/failure roll all supplied world changes back, only return data
+survives. The **top-level** frame has no caller, so its resolution happens at the *observation*
+boundary instead of inside `Step`:
+
+- `EVM.HaltKind.commits` classifies halts: `stop`/`return`/`selfdestruct` **commit** the frame's
+  changes; `revert`/`invalid`/`invalidMemoryAccess` **discard** them.
+- `EVM.committedState st0 st'` is the boundary map. On a committing (or absent) halt it returns `st'`
+  unchanged; on a non-committing halt it rolls everything back to the frame's initial state `st0`,
+  carrying over only the outcome marker (`halted`) and the exposed `returndata` — exactly what real
+  EVM leaves visible to the caller/transaction.
+- `EVM.RunCommitted prog st0 V' stObs o` is the observed whole-program run (`Run` followed by
+  `committedState`); `RunCommitted.det` shows it is functional given `EVM.run_det`.
+
+This is what makes dead-effect reasoning sound at the frame level. The raw exact-state relations
+(`EquivStmt`/`EquivBlock`, which compare the full `Step` state) cannot equate a dead write before a
+revert with the bare revert, because they see the un-rolled-back write. Observed through
+`committedState` they *are* equal: `EVM.deadStore_revert_obs_eq` proves `{ sstore(0,1); revert(0,0) }`
+and `{ revert(0,0) }` have identical committed runs from every initial state.
 
 ## Meta-theory / what we are building toward
 
@@ -232,7 +272,13 @@ though we do not model gas:
 Target property: **semantic preservation** = functional equivalence of whole-program behavior. Tools:
 
 1. **Behavior / observation**: halting result (`return`/`revert`/`stop`/exception + returndata),
-   resulting storage/logs, and terminate-vs-diverge. (No gas.)
+   resulting storage/logs, and terminate-vs-diverge. (No gas.) The `Step` judgment records *which*
+   halt fired in the state (`halted`) but, being shared with sub-frames, does not itself roll back a
+   halted frame's accumulated effects — so a whole-program observation is taken through
+   **`EVM.committedState`** (see "Frame-boundary observation" below), which commits normal/`stop`/
+   `return`/`selfdestruct` halts and rolls a `revert`/`invalid`/`invalidMemoryAccess` frame back to
+   its initial state (keeping only the outcome marker and exposed return data). `EVM.RunCommitted`
+   is the observed whole-program run; with `EVM.run_det` it is functional (`RunCommitted.det`).
 2. **Contextual equivalence as a congruence**: expression- and statement-equivalence proven to be a
    *congruence* w.r.t. every AST constructor. Local rewrites (`add(x,0) → x`, constant folding, …)
    are proven locally and lifted into any context by this congruence lemma — the workhorse.
