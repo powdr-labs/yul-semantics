@@ -197,6 +197,14 @@ realized by complete target-EVM executions. Those executions may take any number
 an arbitrarily deep call stack, so the simulation boundary does not impose a no-reentrancy or
 closed-world assumption.
 
+`selfdestruct` is local and terminal rather than open-world: it does not invoke unknown code. Its
+executable semantics transfers the current balance, appends the executing address to the ordered
+destruction schedule, and halts. `ExecEnv.createdThisTx` selects the post-Cancun behavior when the
+beneficiary aliases the executing address: a pre-existing account keeps its balance, whereas an
+account created in this transaction burns it. Actual fork-dependent account deletion is deferred
+to transaction finalization and is intentionally outside this frame semantics. External call and
+creation worlds carry newly scheduled destructions so nested executions remain observable.
+
 Two built-ins interact with gas and must be classified as **impure / non-deterministic** even
 though we do not model gas:
 

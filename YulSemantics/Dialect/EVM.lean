@@ -27,10 +27,12 @@ about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the f
   external executions and may include arbitrary nested calls, creations, and re-entrant callbacks.
   The call-only `evmWithCalls` API remains available. The original executable `evm` keeps these
   operations stuck because an open-world relation has no canonical evaluator.
+* **Fully modeled (terminal world update)**: `selfdestruct` transfers the executing account's
+  balance, records the destruction scheduled for transaction finalization, and halts. The
+  environment's `createdThisTx` bit selects the post-Cancun self-beneficiary behavior.
 * **Enumerated but unmodeled** (`stepOp` returns `none`):
   - `gas` — **deliberately** not a function of our state: it is nondeterministic by design
     (`DESIGN.md`), so it must not be given a deterministic `stepOp` (that would license CSE).
-  - `selfdestruct` — external world interaction.
 * **Deliberately absent from `Op`**:
   - stack/control opcodes (`DUP*`, `SWAP*`, incl. EIP-663 `DUPN`/`SWAPN`, `PUSH*`, `POP`-as-stack-op,
     `JUMP*`, `PC`) — Yul has no stack; these are bytecode-level and belong to the EVM repo and the
@@ -97,7 +99,7 @@ inductive Op
 
 /-- How a halting built-in terminated, stored in the machine state. -/
 inductive HaltKind
-  | stop | ret | revert | invalid | invalidMemoryAccess
+  | stop | ret | revert | invalid | invalidMemoryAccess | selfdestruct
   deriving Repr, DecidableEq, Inhabited
 
 /-- One emitted log record, including the emitting account. Keeping the
@@ -130,6 +132,11 @@ structure ExecEnv where
   gasprice      : U256 := 0
   /-- The executing account's own balance (`selfbalance`). -/
   selfBalance   : U256 := 0
+  /-- Whether the executing account was created in the current transaction. Post-Cancun this
+  controls whether `selfdestruct(address())` burns its balance and whether transaction finalization
+  deletes it. The frame-level semantics records the scheduled destruction but leaves deletion to
+  a transaction semantics. -/
+  createdThisTx : Bool := false
   /-- The current block's beneficiary address (`coinbase`). -/
   coinbase      : U256 := 0
   /-- The current block's timestamp (`timestamp`). -/
@@ -187,6 +194,7 @@ structure ExecEnv where
   projections synchronized.
 * `returndata` — the return-data buffer (written by open-world calls and creations).
 * `logs` — emitted log records, in order.
+* `selfdestructs` — account addresses scheduled for transaction-finalization deletion, in order.
 * `halted` — set once a halting built-in fires: its kind and the return/revert data. -/
 structure EvmState where
   /-- Byte-addressable memory, unbounded, default `0`. -/
@@ -203,13 +211,16 @@ structure EvmState where
   returndata : List UInt8
   /-- Emitted log records, in order. -/
   logs       : List LogEntry
+  /-- Accounts that have executed `selfdestruct`, in execution order. Deletion is deferred until
+  transaction finalization and is fork-dependent. -/
+  selfdestructs : List U256
   /-- Set once a halting built-in fires: its kind and the return/revert data. -/
   halted     : Option (HaltKind × List UInt8)
 
 /-- The initial machine state: zeroed memory/storage, default environment, not halted. -/
 def EvmState.init : EvmState :=
   { memory := fun _ => 0, activeWords := 0, storage := fun _ => 0, transient := fun _ => 0,
-    env := default, returndata := [], logs := [], halted := none }
+    env := default, returndata := [], logs := [], selfdestructs := [], halted := none }
 
 /-! ### Helpers -/
 
@@ -230,6 +241,18 @@ address truncation, so all 256-bit aliases remain coherent with a concrete accou
   fun a k => if accountKey a = accountKey address then
     if k = key then value else f a k
   else f a k
+
+/-- Point-update of an account-indexed scalar map, respecting low-160-bit address aliases. -/
+@[inline] def updAccountValue (f : U256 → U256) (address value : U256) : U256 → U256 :=
+  fun a => if accountKey a = accountKey address then value else f a
+
+/-- Runtime `EXTCODEHASH` for an account projection. EIP-161-empty accounts return zero; every
+other account returns the configured Keccak hash of its code, including the empty-code hash for a
+funded EOA. This helper keeps `extCodeHashOf` coherent when a balance transfer crosses emptiness. -/
+def projectedCodeHash (env : ExecEnv) (balanceOf : U256 → U256) (address : U256) : U256 :=
+  if (env.nonceOf address).toNat = 0 ∧ (balanceOf address).toNat = 0 ∧
+      (env.extCodeOf address).length = 0 then 0
+  else env.keccakOf (env.extCodeOf address)
 
 /-- The `k`-th least-significant byte of a word. -/
 @[inline] def byteAt (v : U256) (k : Nat) : UInt8 := UInt8.ofNat (v >>> (8 * k)).toNat
@@ -292,6 +315,37 @@ def appendLog (st : EvmState) (topics : List U256) (p n : U256) : EvmState :=
   { touchMemory st p.toNat n.toNat with
     logs := st.logs ++ [⟨st.env.address, topics, readBytes st.memory p.toNat n.toNat⟩] }
 
+/-- Apply the immediate frame-level effects of post-Cancun `SELFDESTRUCT`.
+
+The executing account is always recorded for transaction-finalization processing and the frame
+halts successfully. Sending to another account transfers the full balance and zeroes the sender.
+Sending to self preserves a pre-existing account's balance, but burns the balance of an account
+created in this transaction; final deletion of the latter remains a transaction-level operation.
+All account comparisons use the EVM's low 160 address bits. -/
+def finishSelfdestruct (st : EvmState) (beneficiary : U256) : EvmState :=
+  let self := st.env.address
+  let sameAccount := accountKey beneficiary = accountKey self
+  let balances :=
+    if sameAccount then
+      if st.env.createdThisTx then updAccountValue st.env.balanceOf self 0
+      else st.env.balanceOf
+    else
+      updAccountValue
+        (updAccountValue st.env.balanceOf self 0)
+        beneficiary (st.env.balanceOf beneficiary + st.env.selfBalance)
+  let selfBalance :=
+    if sameAccount then
+      if st.env.createdThisTx then 0 else st.env.selfBalance
+    else 0
+  let codeHashes := projectedCodeHash st.env balances
+  { st with
+    env := { st.env with
+      balanceOf := balances
+      extCodeHashOf := codeHashes
+      selfBalance }
+    selfdestructs := st.selfdestructs ++ [self]
+    halted := some (.selfdestruct, []) }
+
 /-! ### Open-world external calls -/
 
 /-- The four EVM call-family operations. -/
@@ -318,7 +372,8 @@ structure CallRequest where
 /-- The mutable, caller-observable world projection an external execution may change. It contains
 global nonce and storage views so arbitrary callees and init code are fully pinned by a matching
 concrete world. The separate current-account storage fields keep local built-ins simple.
-`logs` contains only newly emitted records and is appended to the caller's existing log sequence. -/
+`logs` and `selfdestructs` contain only newly emitted/scheduled records and are appended to the
+caller's existing transaction-substate sequences. -/
 structure CallWorld where
   /-- Balance of the executing account after the external execution. -/
   selfBalance   : U256
@@ -340,6 +395,8 @@ structure CallWorld where
   transient     : U256 → U256
   /-- Log records emitted by the external execution, in order. -/
   logs          : List LogEntry
+  /-- Destructions scheduled by the external execution, in order. -/
+  selfdestructs : List U256
 
 /-- The caller-visible result of a completed external execution. A false `success` represents
 revert, exceptional failure, depth failure, or another EVM call failure. `returndata` is preserved
@@ -426,6 +483,7 @@ def CallWorld.install (world : CallWorld) (st : EvmState) : EvmState :=
     storage := world.storage
     transient := world.transient
     logs := st.logs ++ world.logs
+    selfdestructs := st.selfdestructs ++ world.selfdestructs
     env := { st.env with
       selfBalance := world.selfBalance
       balanceOf := world.balanceOf
@@ -446,7 +504,8 @@ def CallWorld.ofState (st : EvmState) : CallWorld :=
     transientOf := st.env.transientOf
     storage := st.storage
     transient := st.transient
-    logs := [] }
+    logs := []
+    selfdestructs := [] }
 
 /-- Copy the available prefix of return data into the caller's output area, leaving the remainder
 of that area and all other caller memory unchanged. -/
@@ -584,8 +643,8 @@ def signExtend (i x : U256) : U256 :=
     if x.getLsbD (bits - 1) then x ||| (~~~low) else x &&& low
 
 /-- The executable built-in step function. Returns `none` on an arity mismatch or an unmodeled
-built-in. Call-family operations are deliberately absent from this function; use the relational
-`builtin`/`evmWithCalls` interpretation for them. -/
+built-in. Call- and create-family operations are deliberately absent from this function; use the
+relational `builtinWithExternal`/`evmWithExternal` interpretation for them. -/
 def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult U256 EvmState) :=
   match op with
   -- arithmetic
@@ -717,9 +776,13 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
   | .log2 => match args with | [p, n, t1, t2]         => some (.ok [] (appendLog st [t1, t2] p n)) | _ => none
   | .log3 => match args with | [p, n, t1, t2, t3]     => some (.ok [] (appendLog st [t1, t2, t3] p n)) | _ => none
   | .log4 => match args with | [p, n, t1, t2, t3, t4] => some (.ok [] (appendLog st [t1, t2, t3, t4] p n)) | _ => none
-  -- external interaction: absent from the executable local evaluator
+  -- external interaction: calls/creates are absent from the executable local evaluator
   | .gas | .call | .callcode | .delegatecall | .staticcall
-  | .create | .create2 | .selfdestruct => none
+  | .create | .create2 => none
+  -- terminal world update
+  | .selfdestruct => match args with
+      | [beneficiary] => some (.halt (finishSelfdestruct st beneficiary))
+      | _ => none
   -- halting
   | .stop       => match args with | []     => some (.halt { st with halted := some (.stop, []) }) | _ => none
   | .ret        => match args with
@@ -799,7 +862,7 @@ def builtin (external : ExternalCalls) :
   builtinWithExternal external ExternalCreates.none
 
 /-- Effect classification of each built-in (total on the finite `Op` enum). The flags
-over-approximate (see `Effects`); unmodeled external ops get the conservative `top`. -/
+over-approximate (see `Effects`); the unmodeled gas read gets the conservative `top`. -/
 def effects : Op → Effects
   -- pure computation
   | .add | .sub | .mul | .div | .sdiv | .mod | .smod | .addmod | .mulmod | .exp
@@ -828,8 +891,11 @@ def effects : Op → Effects
   -- calls and creates return normally to the caller but otherwise have every effect
   | .call | .callcode | .delegatecall | .staticcall | .create | .create2 =>
       { deterministic := false, reads := true, writes := true, halts := false }
-  -- remaining external interaction: conservative
-  | .gas | .selfdestruct => Effects.top
+  -- remaining gas interaction: conservative
+  | .gas => Effects.top
+  -- deterministic terminal world update
+  | .selfdestruct =>
+      { deterministic := true, reads := true, writes := true, halts := true }
   -- halting
   | .stop | .invalid =>
       { deterministic := true, reads := false, writes := true, halts := true }
@@ -1027,7 +1093,36 @@ example : (effects .msize).writes = false := rfl
 example : (effects .mload).writes = true := rfl
 example : (effects .returndatacopy).halts = true := rfl
 example : (effects .stop).writes = true := rfl
+example : effects .selfdestruct =
+    { deterministic := true, reads := true, writes := true, halts := true } := rfl
 example : effects .gas = Effects.top := rfl
+
+/-! `SELFDESTRUCT` guards. These cover an ordinary transfer and both sides of the post-Cancun
+self-beneficiary rule. -/
+
+private def selfdestructTestState (createdThisTx : Bool) : EvmState :=
+  { EvmState.init with
+    env := { EvmState.init.env with
+      address := 0x10
+      selfBalance := 7
+      createdThisTx
+      balanceOf := fun address =>
+        if accountKey address = accountKey 0x10 then 7
+        else if accountKey address = accountKey 0x20 then 5 else 0 } }
+
+example :
+    let st := finishSelfdestruct (selfdestructTestState false) 0x20
+    (st.env.selfBalance, st.env.balanceOf 0x10, st.env.balanceOf 0x20,
+      st.selfdestructs, st.halted) =
+      (0, 0, 12, [0x10], some (.selfdestruct, [])) := by rfl
+
+example :
+    let st := finishSelfdestruct (selfdestructTestState false) 0x10
+    (st.env.selfBalance, st.env.balanceOf 0x10) = (7, 7) := by rfl
+
+example :
+    let st := finishSelfdestruct (selfdestructTestState true) 0x10
+    (st.env.selfBalance, st.env.balanceOf 0x10) = (0, 0) := by rfl
 
 /-! Open-world call guards. The post-storage value stands for a callback into the caller: the
 call-boundary semantics commits it exactly on successful, non-static execution. -/

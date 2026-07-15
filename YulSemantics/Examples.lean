@@ -120,6 +120,29 @@ example :
     (Interp.run EVM.exec 100 (yul% { stop() }) EvmState.init).map (·.2.2)
       = .ok .halt := by native_decide
 
+/-- Executable `selfdestruct` fixture: transfer to `0x20`, then ensure the following statement is
+not reached. -/
+private def selfdestructRun :=
+  Interp.run EVM.exec 100
+    (yul% { selfdestruct(0x20) sstore(0, 1) })
+    { EvmState.init with env := { EvmState.init.env with
+        address := 0x10
+        selfBalance := 7
+        balanceOf := fun address =>
+          if accountKey address = accountKey 0x10 then 7
+          else if accountKey address = accountKey 0x20 then 5 else 0 } }
+
+example : selfdestructRun.map (·.2.1.env.selfBalance) = .ok 0 := by native_decide
+example : selfdestructRun.map (·.2.1.env.balanceOf 0x10) = .ok 0 := by native_decide
+example : selfdestructRun.map (·.2.1.env.balanceOf 0x20) = .ok 12 := by native_decide
+example : selfdestructRun.map (fun r =>
+    (r.2.1.selfdestructs.getD 0 0, r.2.1.selfdestructs.length)) = .ok (0x10, 1) := by
+  native_decide
+example : selfdestructRun.map (·.2.1.storage 0) = .ok 0 := by native_decide
+example : selfdestructRun.map (fun r => match r.2.1.halted with
+    | some (.selfdestruct, []) => true | _ => false) = .ok true := by native_decide
+example : selfdestructRun.map (fun r => r.2.2 == .halt) = .ok true := by native_decide
+
 /-- The `sumProgram` (a function with a `for` loop summing `0..9`) computes `45` into memory slot 0
 before returning — exercising function calls, loops, and multiple built-ins through the interpreter. -/
 example :
