@@ -166,6 +166,12 @@ The EVM dialect proves that these flags soundly over-approximate `stepOp`: deter
 have at most one result, non-writing operations preserve the entire state, and non-halting
 operations only return normally (`EVM.effects_sound`).
 
+Because static-call write protection (see below) lets the state-modifying built-ins halt when the
+frame is static, and `effects` cannot observe `ExecEnv.static`, `sstore`/`tstore`/`log0`–`log4` and
+the whole call/create family carry `halts := true`. This is a faithful over-approximation that
+slightly weakens the non-halting guarantee for these writers — a deliberate tradeoff of modeling
+static context.
+
 External calls and contract creation use the relational dialect directly.
 `EVM.evmWithExternal calls creates` takes separate `ExternalCalls` and `ExternalCreates` relations
 from a request and pre-operation state to a completed response; `evmWithCalls` remains the
@@ -177,6 +183,10 @@ logs from arbitrary callees and init code. The semantics itself does not assume 
 behavior. It fixes the boundary:
 
 - caller memory is copied into the request before the external execution;
+- a frame that is itself static (`ExecEnv.static`) applies EVM write protection: `sstore`, `tstore`,
+  `log0`–`log4`, `selfdestruct`, `create`/`create2`, and value-bearing `call`/`callcode` halt
+  exceptionally with `.invalid` instead of taking effect, while `staticcall`, `delegatecall`, and
+  zero-value `call` remain permitted (`STATICCALL` sets this bit on the callee frame);
 - successful non-static calls commit the supplied post-world;
 - failure and `staticcall` roll back all supplied world changes;
 - creation installs the supplied committed world on success or failure (so a creator nonce bump can
