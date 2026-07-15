@@ -197,6 +197,17 @@ realized by complete target-EVM executions. Those executions may take any number
 an arbitrarily deep call stack, so the simulation boundary does not impose a no-reentrancy or
 closed-world assumption.
 
+**Meta-theory scope (which guarantees apply to which dialect).** The determinism lemma, the
+fuel-indexed interpreter, and the adequacy theorem are all stated for the **closed-world local
+dialect `EVM.evm`**. They do **not** apply to the **open-world `EVM.evmWithExternal` (call/create)**:
+that dialect is relational and may be non-deterministic (the environment picks the external response),
+so it is not covered by determinism; and because there is no universal executable choice for the
+open-world relation, it has neither an interpreter nor an adequacy result — the executable dialect
+leaves `gas()` and the whole call/create family stuck. The one meta-theoretic property that *is*
+proven for the open world is effect-classification soundness (`EVM.effects_sound_withExternal`).
+Consequently, programs that call `gas()` or perform external calls/creations are outside the
+determinism and adequacy guarantees.
+
 `selfdestruct` is local and terminal rather than open-world: it does not invoke unknown code. Its
 executable semantics transfers the current balance, appends the executing address to the ordered
 destruction schedule, and halts. `ExecEnv.createdThisTx` selects the post-Cancun behavior when the
