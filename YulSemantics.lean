@@ -11,6 +11,7 @@ import YulSemantics.Interp
 import YulSemantics.Adequacy
 import YulSemantics.Equiv
 import YulSemantics.Rewrites
+import YulSemantics.Observation
 import YulSemantics.Syntax
 import YulSemantics.PrettyPrint
 import YulSemantics.ObjectRun
