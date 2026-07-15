@@ -210,7 +210,11 @@ though we do not model gas:
 
 - `gas()` returns *remaining* gas — a value that changes during execution. It is modeled as an
   oracle / non-deterministic read (never a constant; two `gas()` calls may differ, so they cannot be
-  CSE'd).
+  CSE'd). Concretely, the open-world dialects (`evmWithExternal`/`evmWithCalls`) interpret
+  `gas()` via `builtinWithExternal`: it returns an *arbitrary* word and leaves the state unchanged,
+  so `call(gas(), …)` — the idiomatic call pattern — is derivable. The executable reference dialect
+  `evm` has no oracle, so `gas()` stays stuck there (`stepOp .gas = none`); this is why `evm` is
+  deterministic while the open-world dialects are not.
 - gas forwarding + failure of `call`/`callcode`/`staticcall`/`delegatecall`: external call outcomes
   are modeled by the open-world relation (they can depend on out-of-gas in the callee, which a
   gas-free model cannot itself calculate).

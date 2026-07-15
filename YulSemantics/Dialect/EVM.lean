@@ -30,9 +30,12 @@ about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the f
 * **Fully modeled (terminal world update)**: `selfdestruct` transfers the executing account's
   balance, records the destruction scheduled for transaction finalization, and halts. The
   environment's `createdThisTx` bit selects the post-Cancun self-beneficiary behavior.
-* **Enumerated but unmodeled** (`stepOp` returns `none`):
-  - `gas` — **deliberately** not a function of our state: it is nondeterministic by design
-    (`DESIGN.md`), so it must not be given a deterministic `stepOp` (that would license CSE).
+* **Open-world modeled (nondeterministic oracle)**: `gas` is **deliberately** not a function of our
+  state — it is nondeterministic by design (`DESIGN.md`). In the open-world dialects
+  (`evmWithExternal`/`evmWithCalls`) `builtinWithExternal .gas []` returns an *arbitrary* word and
+  leaves the state unchanged, modeling remaining gas as an oracle read. It must not be given a
+  deterministic `stepOp` (that would license CSE), so it remains stuck in the executable reference
+  dialect `evm` (`stepOp .gas = none`), which has no oracle to consult.
 * **Deliberately absent from `Op`**:
   - stack/control opcodes (`DUP*`, `SWAP*`, incl. EIP-663 `DUPN`/`SWAPN`, `PUSH*`, `POP`-as-stack-op,
     `JUMP*`, `PC`) — Yul has no stack; these are bytecode-level and belong to the EVM repo and the
@@ -854,6 +857,12 @@ def builtinWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
       | [value, offset, size, salt] =>
           externalCreate creates .create2 value offset size (some salt) st result
       | _ => False
+  -- `gas()` is a nondeterministic oracle read: it returns an arbitrary remaining-gas word and
+  -- leaves the state unchanged. It is deliberately absent from the deterministic `stepOp` (which
+  -- has no oracle), so it lives only in this open-world relation. See `DESIGN.md` §1.
+  | .gas => match args with
+      | []   => ∃ g : U256, result = .ok [g] st
+      | _    => False
   | _ => stepOp op args st = some result
 
 /-- Backwards-compatible call-only built-in relation. -/
@@ -1050,7 +1059,7 @@ theorem effects_sound_withExternal (calls : ExternalCalls) (creates : ExternalCr
   refine ⟨?_, ?_, ?_⟩
   · intro op hd
     have hlocal := effects_sound.det op hd
-    cases op <;> simp [effects] at hd
+    cases op <;> simp [effects, Effects.top] at hd
     all_goals
       intro args st r₁ r₂ h₁ h₂
       apply hlocal args st r₁ r₂
@@ -1058,7 +1067,7 @@ theorem effects_sound_withExternal (calls : ExternalCalls) (creates : ExternalCr
       · simpa [evmWithExternal, builtinWithExternal] using h₂
   · intro op hw
     have hlocal := effects_sound.write op hw
-    cases op <;> simp [effects] at hw
+    cases op <;> simp [effects, Effects.top] at hw
     all_goals
       intro args st r h
       apply hlocal args st r
@@ -1147,6 +1156,27 @@ example (external : ExternalCalls) (st : EvmState) (response : CallResponse)
     (evmWithCalls external).Builtin .call [1, 2, 3, 0, 0, 0, 0] st
       (.ok [response.flag] (finishCall .call st response 0 0 0 0)) := by
   exact ⟨response, hresponse, rfl⟩
+
+/-! Open-world `gas()` oracle guards. In the open-world dialect `gas()` may return any word while
+leaving the state unchanged; it remains stuck in the executable reference dialect. -/
+
+example (external : ExternalCalls) (st : EvmState) (g : U256) :
+    (evmWithCalls external).Builtin .gas [] st (.ok [g] st) := ⟨g, rfl⟩
+
+example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState) (g : U256) :
+    (evmWithExternal calls creates).Builtin .gas [] st (.ok [g] st) := ⟨g, rfl⟩
+
+example (st : EvmState) : stepOp .gas [] st = none := rfl
+
+-- The idiomatic `call(gas(), …)` pattern now has a derivation: pick the gas oracle's word, then
+-- take any external response for the call it feeds.
+example (external : ExternalCalls) (st : EvmState) (g : U256) (response : CallResponse)
+    (hresponse : external.Call
+      { kind := .call, gas := g, target := 2, value := 3, input := [] } st response) :
+    (evmWithCalls external).Builtin .gas [] st (.ok [g] st) ∧
+    (evmWithCalls external).Builtin .call [g, 2, 3, 0, 0, 0, 0] st
+      (.ok [response.flag] (finishCall .call st response 0 0 0 0)) :=
+  ⟨⟨g, rfl⟩, response, hresponse, rfl⟩
 
 /-! Open-world creation guards. -/
 
