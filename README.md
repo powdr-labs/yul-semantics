@@ -40,7 +40,10 @@ In place:
   open-world relational interpretations supporting arbitrary nested calls, creations, and
   reentrancy; the executable dialect leaves them stuck. `selfdestruct` deterministically transfers
   the executing account's balance, records its deferred transaction-finalization destruction, and
-  halts, including the post-Cancun created-this-transaction/self-beneficiary distinction.
+  halts, including the post-Cancun created-this-transaction/self-beneficiary distinction. A frame
+  flagged static (`ExecEnv.static`, as set on a `STATICCALL` callee) enforces EVM write protection:
+  `sstore`/`tstore`/`log0`–`log4`/`selfdestruct`, `create`/`create2`, and value-bearing
+  `call`/`callcode` halt exceptionally instead of modifying state.
 - **Objects** — the Yul object layer (nested `code`/`data`/sub-objects): name resolution, a
   layout-consistency predicate relating a compiler's byte layout to an object, and a symbolic proof
   that the canonical constructor (`datacopy`/`return`) returns a data segment's bytes.

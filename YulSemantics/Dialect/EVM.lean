@@ -140,6 +140,11 @@ structure ExecEnv where
   deletes it. The frame-level semantics records the scheduled destruction but leaves deletion to
   a transaction semantics. -/
   createdThisTx : Bool := false
+  /-- Whether this frame executes under a `STATICCALL` context. When set, every state-modifying
+  built-in (`sstore`/`tstore`/`log0`–`log4`/`selfdestruct`, `create`/`create2`, and `call`/`callcode`
+  with nonzero value) halts exceptionally instead of taking effect, matching the EVM's static-call
+  write protection. Memory operations remain permitted. -/
+  static        : Bool := false
   /-- The current block's beneficiary address (`coinbase`). -/
   coinbase      : U256 := 0
   /-- The current block's timestamp (`timestamp`). -/
@@ -734,6 +739,14 @@ def signExtend (i x : U256) : U256 :=
     let low : U256 := (1 <<< bits) - 1
     if x.getLsbD (bits - 1) then x ||| (~~~low) else x &&& low
 
+/-- Guard a state-modifying local built-in by the static-call context. In a static frame
+(`st.env.static = true`) the operation halts exceptionally with `.invalid`, matching the EVM's
+write protection; otherwise it produces `act`. Used for `sstore`/`tstore`/`log0`–`log4`/
+`selfdestruct`. -/
+@[inline] def guardStatic (st : EvmState) (act : BuiltinResult U256 EvmState) :
+    Option (BuiltinResult U256 EvmState) :=
+  some (if st.env.static then .halt { st with halted := some (.invalid, []) } else act)
+
 /-- The executable built-in step function. Returns `none` on an arity mismatch or an unmodeled
 built-in. Call- and create-family operations are deliberately absent from this function; use the
 relational `builtinWithExternal`/`evmWithExternal` interpretation for them. -/
@@ -795,13 +808,13 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
   -- storage
   | .sload      => match args with | [k]    => some (.ok [st.storage k] st) | _ => none
   | .sstore     => match args with
-      | [k, v] => some (.ok [] { st with
+      | [k, v] => guardStatic st (.ok [] { st with
           storage := upd st.storage k v
           env := { st.env with storageOf := updAccount st.env.storageOf st.env.address k v } })
       | _ => none
   | .tload      => match args with | [k]    => some (.ok [st.transient k] st) | _ => none
   | .tstore     => match args with
-      | [k, v] => some (.ok [] { st with
+      | [k, v] => guardStatic st (.ok [] { st with
           transient := upd st.transient k v
           env := { st.env with transientOf := updAccount st.env.transientOf st.env.address k v } })
       | _ => none
@@ -863,17 +876,17 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
   | .blockhash   => rd1 st.env.blockHashOf args st
   | .blobhash    => rd1 st.env.blobHashOf args st
   -- logging
-  | .log0 => match args with | [p, n]                 => some (.ok [] (appendLog st [] p n)) | _ => none
-  | .log1 => match args with | [p, n, t1]             => some (.ok [] (appendLog st [t1] p n)) | _ => none
-  | .log2 => match args with | [p, n, t1, t2]         => some (.ok [] (appendLog st [t1, t2] p n)) | _ => none
-  | .log3 => match args with | [p, n, t1, t2, t3]     => some (.ok [] (appendLog st [t1, t2, t3] p n)) | _ => none
-  | .log4 => match args with | [p, n, t1, t2, t3, t4] => some (.ok [] (appendLog st [t1, t2, t3, t4] p n)) | _ => none
+  | .log0 => match args with | [p, n]                 => guardStatic st (.ok [] (appendLog st [] p n)) | _ => none
+  | .log1 => match args with | [p, n, t1]             => guardStatic st (.ok [] (appendLog st [t1] p n)) | _ => none
+  | .log2 => match args with | [p, n, t1, t2]         => guardStatic st (.ok [] (appendLog st [t1, t2] p n)) | _ => none
+  | .log3 => match args with | [p, n, t1, t2, t3]     => guardStatic st (.ok [] (appendLog st [t1, t2, t3] p n)) | _ => none
+  | .log4 => match args with | [p, n, t1, t2, t3, t4] => guardStatic st (.ok [] (appendLog st [t1, t2, t3, t4] p n)) | _ => none
   -- external interaction: calls/creates are absent from the executable local evaluator
   | .gas | .call | .callcode | .delegatecall | .staticcall
   | .create | .create2 => none
   -- terminal world update
   | .selfdestruct => match args with
-      | [beneficiary] => some (.halt (finishSelfdestruct st beneficiary))
+      | [beneficiary] => guardStatic st (.halt (finishSelfdestruct st beneficiary))
       | _ => none
   -- halting
   | .stop       => match args with | []     => some (.halt { st with halted := some (.stop, []) }) | _ => none
@@ -920,13 +933,20 @@ def builtinWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
   match op with
   | .call => match args with
       | [gas, target, value, inputOffset, inputSize, outputOffset, outputSize] =>
-          externalCall calls .call gas target value inputOffset inputSize outputOffset
-            outputSize st result
+          -- A value-bearing `call` is a state modification, forbidden in a static frame.
+          if st.env.static ∧ value ≠ 0 then
+            result = .halt { st with halted := some (.invalid, []) }
+          else
+            externalCall calls .call gas target value inputOffset inputSize outputOffset
+              outputSize st result
       | _ => False
   | .callcode => match args with
       | [gas, target, value, inputOffset, inputSize, outputOffset, outputSize] =>
-          externalCall calls .callcode gas target value inputOffset inputSize outputOffset
-            outputSize st result
+          if st.env.static ∧ value ≠ 0 then
+            result = .halt { st with halted := some (.invalid, []) }
+          else
+            externalCall calls .callcode gas target value inputOffset inputSize outputOffset
+              outputSize st result
       | _ => False
   | .delegatecall => match args with
       | [gas, target, inputOffset, inputSize, outputOffset, outputSize] =>
@@ -940,11 +960,14 @@ def builtinWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
       | _ => False
   | .create => match args with
       | [value, offset, size] =>
-          externalCreate creates .create value offset size none st result
+          -- Contract creation is forbidden in a static frame.
+          if st.env.static then result = .halt { st with halted := some (.invalid, []) }
+          else externalCreate creates .create value offset size none st result
       | _ => False
   | .create2 => match args with
       | [value, offset, size, salt] =>
-          externalCreate creates .create2 value offset size (some salt) st result
+          if st.env.static then result = .halt { st with halted := some (.invalid, []) }
+          else externalCreate creates .create2 value offset size (some salt) st result
       | _ => False
   -- `gas()` is a nondeterministic oracle read: it returns an arbitrary remaining-gas word and
   -- leaves the state unchanged. It is deliberately absent from the deterministic `stepOp` (which
@@ -964,13 +987,18 @@ over-approximate (see `Effects`); the unmodeled gas read gets the conservative `
 
 On the `reads` column specifically (`reads = true` ⇔ the built-in *observes* the prior state; see the
 `Effects.reads` field doc for the precise, still-unproven-in-Lean meaning): note that `reads` is
-independent of `writes`. The four "deterministic writes (no state read)" entries below —
-`mstore`/`mstore8`/`sstore`/`tstore` — are deliberately `reads := false` **despite** `writes := true`,
-because a blind store's return values (none) and the memory/storage delta it applies are fixed by its
-arguments and never consult the prior contents of that slot; this is the intended meaning, not an
-oversight. The dual is `mload`/`keccak256`/`sload`/`*copy`, which read state contents and so are
-`reads := true`. This whole table has been audited against that meaning and is internally consistent;
-a machine-checked `reads` soundness proof is future work (again, see `Effects.reads`). -/
+independent of `writes`. The blind-write entries below — `mstore`/`mstore8`/`sstore`/`tstore` — are
+deliberately `reads := false` **despite** `writes := true`, because a blind store's return values
+(none) and the memory/storage delta it applies are fixed by its arguments and never consult the prior
+contents of that slot; this is the intended meaning, not an oversight. The dual is
+`mload`/`keccak256`/`sload`/`*copy`, which read state contents and so are `reads := true`. This whole
+table has been audited against that meaning and is internally consistent; a machine-checked `reads`
+soundness proof is future work (again, see `Effects.reads`).
+
+Because `effects` cannot observe `ExecEnv.static`, the state-modifying built-ins that halt only in a
+static frame (`sstore`/`tstore`/`log0`–`log4`, and the call/create family) must carry `halts := true`
+to remain a sound over-approximation. This is faithful but slightly weakens the non-halting guarantee
+for these writers — a deliberate tradeoff of modeling static-call write protection. -/
 def effects : Op → Effects
   -- pure computation: no state at all → reads := false
   | .add | .sub | .mul | .div | .sdiv | .mod | .smod | .addmod | .mulmod | .exp
@@ -986,22 +1014,29 @@ def effects : Op → Effects
   | .balance | .extcodesize | .extcodehash | .blockhash | .blobhash
   | .datasize | .dataoffset =>
       { deterministic := true, reads := true, writes := false, halts := false }
-  -- deterministic *blind* writes: the stored bytes/slot come from the arguments, the prior contents
-  -- are never observed → reads := false even though writes := true (see the doc comment above)
-  | .mstore | .mstore8 | .sstore | .tstore =>
+  -- deterministic *blind* memory writes: the stored bytes come from the arguments, the prior
+  -- contents are never observed → reads := false even though writes := true (see the doc comment
+  -- above). Memory writes are permitted in a static frame, so they never halt.
+  | .mstore | .mstore8 =>
       { deterministic := true, reads := false, writes := true, halts := false }
+  -- deterministic *blind* state writes (reads := false, as above); but they halt exceptionally in a
+  -- static frame (write protection), so halts := true
+  | .sstore | .tstore =>
+      { deterministic := true, reads := false, writes := true, halts := true }
   -- deterministic read+write: these move/hash *current* state contents, and memory reads can expand
   -- memory (observable through `msize`) → reads := true, writes := true
-  | .keccak256 | .mload | .mcopy | .calldatacopy | .codecopy | .extcodecopy | .datacopy
-  | .log0 | .log1 | .log2 | .log3 | .log4 =>
+  | .keccak256 | .mload | .mcopy | .calldatacopy | .codecopy | .extcodecopy | .datacopy =>
       { deterministic := true, reads := true, writes := true, halts := false }
+  -- logging reads memory contents and writes logs; it halts exceptionally in a static frame
+  | .log0 | .log1 | .log2 | .log3 | .log4 =>
+      { deterministic := true, reads := true, writes := true, halts := true }
   -- reads returndata; returndata bounds failure is an exceptional halt
   | .returndatacopy =>
       { deterministic := true, reads := true, writes := true, halts := true }
   -- calls and creates return normally to the caller but otherwise have every effect (they observe
-  -- and mutate the world) → reads := true
+  -- and mutate the world) → reads := true; they may halt exceptionally under static write protection
   | .call | .callcode | .delegatecall | .staticcall | .create | .create2 =>
-      { deterministic := false, reads := true, writes := true, halts := false }
+      { deterministic := false, reads := true, writes := true, halts := true }
   -- remaining gas interaction: conservative
   | .gas => Effects.top
   -- deterministic terminal world update: reads balance to transfer → reads := true
@@ -1155,9 +1190,11 @@ theorem effects_sound : evm.EffectsSound := by
         _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, _ | ⟨e, _ | ⟨f, _ | ⟨g, args⟩⟩⟩⟩⟩⟩⟩ <;>
         simp_all [stepOp, un, bin, ter, rd0, rd1] <;> subst r <;> rfl
 
+set_option linter.unnecessarySeqFocus false in
 /-- The effect classification remains sound for every external call/create relation. External
-operations carry no determinism or non-writing promise, and their non-halting promise follows from
-the boundary relations always producing `BuiltinResult.ok`. -/
+operations carry no determinism, non-writing, or non-halting promise (the call/create family is
+now marked `halts := true` to cover static-context write protection), so only the non-halting
+*local* built-ins remain to discharge; their `Builtin` is definitionally `stepOp`. -/
 theorem effects_sound_withExternal (calls : ExternalCalls) (creates : ExternalCreates) :
     (evmWithExternal calls creates).EffectsSound := by
   refine ⟨?_, ?_, ?_⟩
@@ -1177,14 +1214,16 @@ theorem effects_sound_withExternal (calls : ExternalCalls) (creates : ExternalCr
       apply hlocal args st r
       simpa [evmWithExternal, builtinWithExternal] using h
   · intro op hh
+    -- After marking the static-guarded writers (`sstore`/`tstore`/`log*`) and the whole
+    -- call/create family with `halts := true`, the only ops left to discharge here are the
+    -- genuinely non-halting *local* built-ins, whose `Builtin` is definitionally `stepOp`.
     cases op <;> simp [effects, Effects.top] at hh
     all_goals
       intro args st r hb
+      change stepOp _ args st = some r at hb
       rcases args with
         _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, _ | ⟨e, _ | ⟨f, _ | ⟨g, _ | ⟨h, args⟩⟩⟩⟩⟩⟩⟩⟩ <;>
-        simp_all [evmWithExternal, builtinWithExternal, externalCall, externalCreate, stepOp,
-          un, bin, ter, rd0, rd1]
-      all_goals try { rcases hb with ⟨response, _, rfl⟩; rfl }
+        simp_all [stepOp, un, bin, ter, rd0, rd1] <;> subst r <;> rfl
 
 /-- Compatibility specialization for call-only clients. -/
 theorem effects_sound_withCalls (external : ExternalCalls) :
@@ -1267,10 +1306,13 @@ example (st : EvmState) (response : CallResponse) (key : U256) :
   simp
 
 example (external : ExternalCalls) (st : EvmState) (response : CallResponse)
+    (hstatic : st.env.static = false)
     (hresponse : external.Call
       { kind := .call, gas := 1, target := 2, value := 3, input := [] } st response) :
     (evmWithCalls external).Builtin .call [1, 2, 3, 0, 0, 0, 0] st
       (.ok [response.flag] (finishCall .call st response 0 0 0 0)) := by
+  have hc : ¬ (st.env.static ∧ (3 : U256) ≠ 0) := by simp [hstatic]
+  simp only [evmWithCalls, evmWithExternal, builtinWithExternal, if_neg hc]
   exact ⟨response, hresponse, rfl⟩
 
 /-! Open-world `gas()` oracle guards. In the open-world dialect `gas()` may return any word while
@@ -1287,12 +1329,16 @@ example (st : EvmState) : stepOp .gas [] st = none := rfl
 -- The idiomatic `call(gas(), …)` pattern now has a derivation: pick the gas oracle's word, then
 -- take any external response for the call it feeds.
 example (external : ExternalCalls) (st : EvmState) (g : U256) (response : CallResponse)
+    (hstatic : st.env.static = false)
     (hresponse : external.Call
       { kind := .call, gas := g, target := 2, value := 3, input := [] } st response) :
     (evmWithCalls external).Builtin .gas [] st (.ok [g] st) ∧
     (evmWithCalls external).Builtin .call [g, 2, 3, 0, 0, 0, 0] st
-      (.ok [response.flag] (finishCall .call st response 0 0 0 0)) :=
-  ⟨⟨g, rfl⟩, response, hresponse, rfl⟩
+      (.ok [response.flag] (finishCall .call st response 0 0 0 0)) := by
+  refine ⟨⟨g, rfl⟩, ?_⟩
+  have hc : ¬ (st.env.static ∧ (3 : U256) ≠ 0) := by simp [hstatic]
+  simp only [evmWithCalls, evmWithExternal, builtinWithExternal, if_neg hc]
+  exact ⟨response, hresponse, rfl⟩
 
 /-! Open-world creation guards. -/
 
@@ -1328,16 +1374,82 @@ example (st : EvmState) (response : CreateResponse) (a : U256) :
   simp
 
 example (creates : ExternalCreates) (st : EvmState) (response : CreateResponse)
+    (hstatic : st.env.static = false)
     (hresponse : creates.Create
       { kind := .create2, value := 7, initCode := [], salt := some 11 } st response) :
     (evmWithExternal ExternalCalls.none creates).Builtin .create2 [7, 0, 0, 11] st
       (.ok [response.result] (finishCreate st response 0 0)) := by
+  have hc : ¬ (st.env.static = true) := by simp [hstatic]
+  simp only [evmWithExternal, builtinWithExternal, if_neg hc]
   exact ⟨response, hresponse, rfl⟩
 
-/-- Local writes update both the executing-account view and the global world projection. -/
-example (st : EvmState) (key value : U256) :
+/-- Local writes (in a non-static frame) update both the executing-account view and the global world
+projection. -/
+example (st : EvmState) (key value : U256) (hstatic : st.env.static = false) :
     ∃ st', stepOp .sstore [key, value] st = some (.ok [] st') ∧
       st'.storage key = value ∧ st'.env.storageOf st.env.address key = value := by
-  refine ⟨_, rfl, ?_, ?_⟩ <;> simp [upd, updAccount]
+  refine ⟨{ st with
+      storage := upd st.storage key value
+      env := { st.env with storageOf := updAccount st.env.storageOf st.env.address key value } },
+    ?_, ?_, ?_⟩
+  · simp [stepOp, guardStatic, hstatic]
+  · simp [upd]
+  · simp [updAccount]
+
+/-! Static-call write-protection guards. In a static frame the state-modifying built-ins halt
+exceptionally with `.invalid`; the same ops write normally in an ordinary frame. -/
+
+/-- A static frame's `sstore` halts exceptionally with `.invalid` and does not write. -/
+example (st : EvmState) (key value : U256) (hstatic : st.env.static = true) :
+    stepOp .sstore [key, value] st = some (.halt { st with halted := some (.invalid, []) }) := by
+  simp [stepOp, guardStatic, hstatic]
+
+/-- A static frame's `tstore` likewise halts exceptionally. -/
+example (st : EvmState) (key value : U256) (hstatic : st.env.static = true) :
+    stepOp .tstore [key, value] st = some (.halt { st with halted := some (.invalid, []) }) := by
+  simp [stepOp, guardStatic, hstatic]
+
+/-- A static frame's `log0` halts exceptionally. -/
+example (st : EvmState) (p n : U256) (hstatic : st.env.static = true) :
+    stepOp .log0 [p, n] st = some (.halt { st with halted := some (.invalid, []) }) := by
+  simp [stepOp, guardStatic, hstatic]
+
+/-- A static frame's `selfdestruct` halts exceptionally (no balance transfer). -/
+example (st : EvmState) (b : U256) (hstatic : st.env.static = true) :
+    stepOp .selfdestruct [b] st = some (.halt { st with halted := some (.invalid, []) }) := by
+  simp [stepOp, guardStatic, hstatic]
+
+/-- A static frame's value-bearing `call` halts exceptionally under `builtinWithExternal`. -/
+example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState)
+    (hstatic : st.env.static = true) :
+    builtinWithExternal calls creates .call [0, 0, 1, 0, 0, 0, 0] st
+      (.halt { st with halted := some (.invalid, []) }) := by
+  simp [builtinWithExternal, hstatic]
+
+/-- A static frame's `create` halts exceptionally under `builtinWithExternal`. -/
+example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState)
+    (hstatic : st.env.static = true) :
+    builtinWithExternal calls creates .create [0, 0, 0] st
+      (.halt { st with halted := some (.invalid, []) }) := by
+  simp [builtinWithExternal, hstatic]
+
+/-- A zero-value `call` is still permitted in a static frame (delegates to the external relation). -/
+example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState) (response : CallResponse)
+    (hstatic : st.env.static = true)
+    (hresponse : calls.Call
+      { kind := .call, gas := 1, target := 2, value := 0,
+        input := readBytes st.memory 0 0 } st response) :
+    builtinWithExternal calls creates .call [1, 2, 0, 0, 0, 0, 0] st
+      (.ok [response.flag] (finishCall .call st response 0 0 0 0)) := by
+  simp only [builtinWithExternal, hstatic]
+  refine ⟨response, hresponse, rfl⟩
+
+/-- New effect flags: the static-guarded writers now advertise possible halting. -/
+example : (effects .sstore).halts = true := rfl
+example : (effects .tstore).halts = true := rfl
+example : (effects .log0).halts = true := rfl
+example : (effects .call).halts = true := rfl
+example : (effects .create).halts = true := rfl
+example : (effects .sstore).writes = true := rfl
 
 end YulSemantics.EVM

@@ -64,13 +64,23 @@ def bareRevert : Block EVM.Op :=
 /-- The dead-store program runs (raw, exact-state) to a `revert` halt, and its committed observation
 rolls every effect back to `st0` with only the `revert` marker set. The raw result state — left
 implicit — still carries `storage[0] = 1`; `committedState` is what discards it. -/
-private theorem run_dead (st0 : EvmState) :
+private theorem run_dead (st0 : EvmState) (hstatic : st0.env.static = false) :
     ∃ st', Run EVM.evm deadStoreRevert st0 [] st' .halt ∧
       committedState st0 st' = { st0 with halted := some (.revert, []) } := by
+  -- With a non-static frame the guarded `sstore` takes its write branch; pin its result state
+  -- explicitly so the run's final state stays concrete.
+  have hss : evm.Builtin .sstore [evm.litValue (.number 0), evm.litValue (.number 1)] st0
+      (.ok [] { st0 with
+        storage := upd st0.storage (evm.litValue (.number 0)) (evm.litValue (.number 1)),
+        env := { st0.env with
+          storageOf := updAccount st0.env.storageOf st0.env.address
+            (evm.litValue (.number 0)) (evm.litValue (.number 1)) } }) := by
+    show stepOp .sstore _ st0 = some _
+    simp [stepOp, guardStatic, hstatic]
   have hrun : Run EVM.evm deadStoreRevert st0 [] _ .halt :=
     Step.block (Step.seqCons
       (Step.exprStmt (Step.builtinOk
-        (Step.argsCons (Step.argsCons Step.argsNil Step.lit) Step.lit) rfl))
+        (Step.argsCons (Step.argsCons Step.argsNil Step.lit) Step.lit) hss))
       (Step.seqStop
         (Step.exprStmtHalt (Step.builtinHalt
           (Step.argsCons (Step.argsCons Step.argsNil Step.lit) Step.lit) rfl))
@@ -90,9 +100,9 @@ private theorem run_bare (st0 : EvmState) :
 
 /-- Both programs observe the same canonical committed state: `st0` with only the `revert` marker
 set (all world changes discarded, no return data). -/
-theorem deadStoreRevert_committed (st0 : EvmState) :
+theorem deadStoreRevert_committed (st0 : EvmState) (hstatic : st0.env.static = false) :
     RunCommitted deadStoreRevert st0 [] { st0 with halted := some (.revert, []) } .halt := by
-  obtain ⟨st', hrun, heq⟩ := run_dead st0
+  obtain ⟨st', hrun, heq⟩ := run_dead st0 hstatic
   exact ⟨st', hrun, heq.symm⟩
 
 theorem bareRevert_committed (st0 : EvmState) :
@@ -100,15 +110,19 @@ theorem bareRevert_committed (st0 : EvmState) :
   obtain ⟨st', hrun, heq⟩ := run_bare st0
   exact ⟨st', hrun, heq.symm⟩
 
-/-- **The general theorem.** From *every* initial state `st0`, the dead-store program and the bare
-revert have identical observed (committed) runs. In particular the shadowed `sstore(0, 1)` is
-invisible at the frame boundary — the raw exact-state relations (`EquivBlock`, which compare the
+/-- **The general theorem.** From every *non-static* initial state `st0`, the dead-store program and
+the bare revert have identical observed (committed) runs. In particular the shadowed `sstore(0, 1)`
+is invisible at the frame boundary — the raw exact-state relations (`EquivBlock`, which compare the
 full `Step` state) cannot prove this, because they see the un-rolled-back storage write. Proven
-relationally via whole-program determinism (`EVM.run_det`), quantified over all `st0`. -/
-theorem deadStore_revert_obs_eq (st0 : EvmState) (V' : VEnv EVM.evm) (stObs : EvmState)
-    (o : Outcome) :
+relationally via whole-program determinism (`EVM.run_det`), quantified over all non-static `st0`.
+
+The `st0.env.static = false` hypothesis is essential and faithful: under a `STATICCALL` context the
+two programs genuinely differ — `sstore` itself halts with `.invalid` (exceptional), so the
+dead-store program observes an `.invalid` halt while the bare revert observes `.revert`. -/
+theorem deadStore_revert_obs_eq (st0 : EvmState) (hstatic : st0.env.static = false)
+    (V' : VEnv EVM.evm) (stObs : EvmState) (o : Outcome) :
     RunCommitted deadStoreRevert st0 V' stObs o ↔ RunCommitted bareRevert st0 V' stObs o := by
-  obtain ⟨sd, hd, hde⟩ := run_dead st0
+  obtain ⟨sd, hd, hde⟩ := run_dead st0 hstatic
   obtain ⟨sb, hb, hbe⟩ := run_bare st0
   constructor
   · rintro ⟨st', hrun, rfl⟩
