@@ -8,17 +8,17 @@ This module is deliberately dependency-light (no Mathlib): it is pure syntax.
 
 ## Modeling decisions (see `DESIGN.md`)
 
-* **Built-ins are a first-class enum, parameterized (Option D).** The AST is parameterized over an
+* **Built-ins are a first-class enum, and the AST is parameterized over it.** The AST is parameterized over an
   operation type `Op`; a call is either a dialect built-in (`Expr.builtin op args`, with `op : Op`)
   or a user-defined function call (`Expr.call fn args`, with `fn : Ident`). The core stays
   dialect-agnostic (it is generic in the *type* `Op`), while dialect-specific optimizations can
   pattern-match on `Op` structurally and dialect-agnostic passes are `∀ Op, …` — the type system
-  enforces the separation. Name→`Op` resolution happens at parse time (Phase 4), sound because Yul
+  enforces the separation. Name→`Op` resolution happens at parse time, sound because Yul
   forbids user functions from shadowing built-ins.
 * **Single-sorted.** The EVM dialect has one type (`u256`); type annotations carry no semantic
   content and are omitted (the DSL parses and discards optional `: TypeName`).
 * **Dialect-agnostic literals.** A `Literal` holds only *syntactic* data; a `Dialect` interprets it
-  (`litValue`, Phase 2).
+  (`litValue`).
 * **`Outcome` is dialect-agnostic.** Halting built-ins signal `.halt`; the payload lives in the
   machine state, not in `Outcome`.
 -/
@@ -48,7 +48,7 @@ inductive Literal
 * `call fn args` — a call to the *user-defined* function named `fn`.
 
 `DecidableEq`/`BEq` are intentionally not derived (the deriving handlers do not support recursion
-through `List`); syntactic equality is first needed for the optimization proofs (Phase 5). -/
+through `List`); syntactic equality is first needed for the optimization proofs. -/
 inductive Expr (Op : Type)
   | lit     (l : Literal)
   | var     (x : Ident)
@@ -58,7 +58,7 @@ inductive Expr (Op : Type)
 
 /-- A Yul statement, parameterized over the built-in operation type `Op`.
 
-Note on scoping (enforced by the semantics in Phase 3, not by the AST):
+Note on scoping (enforced by the semantics, not by the AST):
 * function definitions are visible throughout their enclosing block (forward references allowed);
 * variables declared in a `forLoop`'s `init` block are visible in its `cond`, `post`, and `body`. -/
 inductive Stmt (Op : Type)

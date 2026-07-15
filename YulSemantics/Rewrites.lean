@@ -5,8 +5,8 @@ import YulSemantics.Syntax
 # YulSemantics.Rewrites
 
 Sample **local rewrites** for the EVM dialect, proven as semantic equivalences and lifted through
-the congruence lemmas of `YulSemantics.Equiv` — validating that the Phase 5 framework can carry an
-optimizer's proof obligations:
+the congruence lemmas of `YulSemantics.Equiv` — validating that the equivalence/congruence framework
+can carry an optimizer's proof obligations:
 
 * constant folding: `add(2, 3) ≈ 5`;
 * algebraic identity: `add(x, 0) ≈ x` (for a variable `x`);

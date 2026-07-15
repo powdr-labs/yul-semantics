@@ -1,7 +1,7 @@
 # Yul Semantics — Design
 
 This repository defines a formal semantics for the [Yul](https://docs.soliditylang.org/en/latest/yul.html)
-intermediate language in Lean 4. It is the foundation for a future, separate project: a
+intermediate language in Lean 4. It is the foundation for a separate, future project: a
 **verified optimizing compiler from Yul to EVM bytecode**. That compiler will build *on top* of
 this repository; the EVM bytecode semantics lives in a *different* repository and is not included
 here.
@@ -9,8 +9,6 @@ here.
 Scope of this repo: **the Yul semantics only.** No compiler, no bytecode.
 
 ## Guiding decisions
-
-These were decided up front and drive everything below.
 
 ### 1. Gas is not modeled
 
@@ -21,8 +19,8 @@ control-flow outcome. Consequences:
   obligation. We deliberately prove **nothing** about gas going up or down (some passes trade it).
 - Gas is the optimizer's *motivation*, never a correctness obligation.
 
-The one place gas leaks into the *language* is via built-ins, handled in the Dialect (see §"Effect
-classification").
+The one place gas leaks into the *language* is via built-ins, handled in the Dialect (see "Effect
+classification" and "Gas" below).
 
 Although gas costs are absent, the EVM dialect tracks the active-memory high-water mark because
 `msize()` exposes it as a functional program result. Memory-touching operations update that mark;
@@ -36,15 +34,15 @@ semantics** — an evaluation relation, not an executable function.
 Rationale: empirical validation against `solc`'s Yul interpreter is **not** a priority for this
 project, so the main advantage of an executable interpreter (differential testing) does not apply.
 The relational semantics reads like a specification, is the natural object for inductive
-meta-theory (logic soundness, compiler simulation), models non-determinism natively, and — because
-we prove the interpreter equivalent to it if/when we build one — its "silent ill-formedness" risk
-is caught by that very equivalence proof (a missing rule makes adequacy unprovable).
+meta-theory (logic soundness, compiler simulation), and models non-determinism natively.
 
 An **executable fuel-indexed interpreter** is a *derived* view (`YulSemantics/Interp.lean`), built
 over an `ExecDialect` (a `Dialect` plus a computable `builtinFn`). It is not itself a correctness
-foundation; **adequacy** — `interp` ⇔ `BigStep` (sound always, complete for terminating runs) — is
-the pending proof that ties it to the ground truth. It already lets us *run* programs end-to-end
-(see the `native_decide` tests in `YulSemantics/Examples.lean`).
+foundation; it is tied to the ground truth by the **adequacy** theorem (`YulSemantics/Adequacy.lean`):
+the interpreter is sound at any fuel and complete at sufficiently large fuel for terminating runs.
+Together with determinism, this pins the interpreter down as *the* computational content of the
+semantics. It also lets us *run* programs end-to-end (see the `native_decide` tests in
+`YulSemantics/Examples.lean`).
 
 ### 3. The semantics is parameterized over an abstract `Dialect`
 
@@ -55,9 +53,10 @@ independent of the built-in functions. We reflect this with an abstract `Dialect
   over it (see "AST" below).
 - `Value` — the value type (for the EVM dialect: `BitVec 256`).
 - `State` — the machine/world state (memory, storage, environment, logs, …).
-- `builtins` — interpretation of built-in functions: names + argument values + state ↦ result
-  values + new state (+ possible halt).
-- `litValue` — interpretation of numeric literals as values.
+- `Builtin` — interpretation of built-in functions as a *relation*: operation + argument values +
+  state ↦ result values + new state (+ possible halt). A relation, not a function, so that
+  non-deterministic built-ins (`gas()`, external calls) can be modeled.
+- `litValue` — interpretation of literals as values.
 - effect classification of built-ins (see below).
 
 This keeps the repository pure Yul. The compiler project instantiates the Dialect using the *real*
@@ -81,10 +80,10 @@ same data; `BitVec.toFin`/`BitVec.ofFin` are inverse projections with `simp` sup
 match relation relates words by this coercion — a definitional coercion, not a real conversion. We
 do **not** change the EVM repo.
 
-### 5. Concrete-syntax DSL, built early
+### 5. Concrete-syntax DSL
 
 A `syntax`/macro embedding lets us write real Yul concrete syntax that elaborates to the AST
-(similar in spirit to EVMYulLean). Built early so tests and examples read like Yul from the start.
+(similar in spirit to EVMYulLean), so tests and examples read like Yul.
 
 ## Language model
 
@@ -98,8 +97,8 @@ Yul's grammar (EVM dialect) is small and fixed:
   `break`, `continue`, `leave`, and expression-statements.
 - **Objects**: named code block + sub-objects + data.
 
-**Built-ins are a first-class enum, and the AST is parameterized over it (Option D).** A call is
-either a dialect built-in (`Expr.builtin op args`, `op : Op`) or a user-defined function call
+**Built-ins are a first-class enum, and the AST is parameterized over it.** A call is either a
+dialect built-in (`Expr.builtin op args`, `op : Op`) or a user-defined function call
 (`Expr.call fn args`, `fn : Ident`). The AST is generic in the *type* `Op` (the dialect supplies it),
 so:
 
@@ -109,10 +108,8 @@ so:
 - **dialect-specific** optimizations (constant folding, algebraic identities) fix `Op := EVM.Op` and
   pattern-match on it structurally (exhaustive, type-checked), with correctness proofs connecting
   `op` directly to the built-in semantics;
-- name→`Op` resolution happens at parse time (Phase 4), sound because Yul forbids user functions from
+- name→`Op` resolution happens at parse time, sound because Yul forbids user functions from
   shadowing built-ins. User functions remain `Ident`, resolved via the environment.
-
-Sketch:
 
 ```lean
 inductive Expr (Op : Type)
@@ -148,8 +145,12 @@ inductive Outcome
   | normal
   | break | continue    -- caught by the enclosing `for`
   | leave               -- caught by the enclosing function body
-  | halt (h : HaltData) -- from halting built-ins (return/revert/stop); propagates to the top
+  | halt                -- from halting built-ins (return/revert/stop); propagates to the top;
+                        --   the payload (kind + data) lives in the machine state
 ```
+
+Argument lists are evaluated **right-to-left** (Yul's specified order); values are collected in
+source order.
 
 ### Scoping
 
@@ -157,20 +158,25 @@ Yul is lexically scoped. A block first collects its function definitions (functi
 forward-referenced within a block), then executes its statements. The environment maps variable
 names to values and function names to definitions.
 
-### Effect classification (the one place gas touches the language)
+### Effect classification
 
-The `Dialect` classifies each built-in by effect — e.g. *pure*, *state-reading*, *state-writing*,
-*halting*, and whether it is *deterministic*. This classification is what makes optimization proofs
-sound (CSE/DCE/reordering may only move or drop calls with the right effects).
-The EVM dialect proves that these flags soundly over-approximate `stepOp`: deterministic operations
-have at most one result, non-writing operations preserve the entire state, and non-halting
-operations only return normally (`EVM.effects_sound`).
+The `Dialect` classifies each built-in by effect — whether it is *deterministic*, *reads* state,
+*writes* state, and/or *halts*. This classification is what makes optimization proofs sound
+(CSE/DCE/reordering may only move or drop calls with the right effects). The EVM dialect proves that
+these flags soundly over-approximate `stepOp`: deterministic operations have at most one result,
+non-writing operations preserve the entire state, and non-halting operations only return normally
+(`EVM.effects_sound`; `EVM.effects_sound_withExternal` for the open-world dialect).
 
 Because static-call write protection (see below) lets the state-modifying built-ins halt when the
 frame is static, and `effects` cannot observe `ExecEnv.static`, `sstore`/`tstore`/`log0`–`log4` and
 the whole call/create family carry `halts := true`. This is a faithful over-approximation that
 slightly weakens the non-halting guarantee for these writers — a deliberate tradeoff of modeling
 static context.
+
+(The `reads` flag is documented but its soundness is not yet machine-checked — see "What is not done,
+and why".)
+
+## EVM dialect: external calls and contract creation
 
 External calls and contract creation use the relational dialect directly.
 `EVM.evmWithExternal calls creates` takes separate `ExternalCalls` and `ExternalCreates` relations
@@ -189,51 +195,47 @@ behavior. It fixes the boundary:
   zero-value `call` remain permitted (`STATICCALL` sets this bit on the callee frame);
 - successful non-static calls commit the supplied post-world;
 - failure and `staticcall` roll back all supplied world changes;
-- creation installs the supplied committed world on success or failure (so a creator nonce bump can
-  survive failed deployment) and returns the created address or zero;
+- creation installs the committed post-world on every path (a creator nonce bump can survive failed
+  deployment) and returns the created address or zero; a *failed* creation commits **only** the
+  creator nonce bump, rolling everything else back, exactly as a call rolls back on failure
+  (`finishCreate_failure_storage` / `finishCreate_success_storage`);
 - return data is retained in full, while only its requested prefix is copied to caller memory; and
 - the call expression evaluates to the EVM success word.
 
 For `create`/`create2`, the init-code memory slice is copied into the request and expands active
 memory. A successful response installs its selected address and clears returndata; failure returns
-zero and may expose revert data. The completed post-world is installed on every path because the
-creator nonce can advance even when init code reverts or deployment fails. CREATE2 requests also
-carry their salt. Global nonce and storage projections make these responses stable across every
-matching concrete world, including storage-dependent callees and reentrant execution.
+zero and may expose revert data. CREATE2 requests also carry their salt. Global nonce and storage
+projections make these responses stable across every matching concrete world, including
+storage-dependent callees and reentrant execution.
 
-The executable `EVM.evm` keeps calls and creations stuck. There is deliberately no universal executable choice
-for an open-world relation. Compiler correctness instead instantiates `external` with responses
-realized by complete target-EVM executions. Those executions may take any number of steps and use
-an arbitrarily deep call stack, so the simulation boundary does not impose a no-reentrancy or
-closed-world assumption.
+The executable `EVM.evm` keeps calls and creations stuck. There is deliberately no universal
+executable choice for an open-world relation. Compiler correctness instead instantiates `external`
+with responses realized by complete target-EVM executions. Those executions may take any number of
+steps and use an arbitrarily deep call stack, so the simulation boundary does not impose a
+no-reentrancy or closed-world assumption.
 
-**Meta-theory scope (which guarantees apply to which dialect).** The determinism lemma, the
-fuel-indexed interpreter, and the adequacy theorem are all stated for the **closed-world local
-dialect `EVM.evm`**. They do **not** apply to the **open-world `EVM.evmWithExternal` (call/create)**:
-that dialect is relational and may be non-deterministic (the environment picks the external response),
-so it is not covered by determinism; and because there is no universal executable choice for the
-open-world relation, it has neither an interpreter nor an adequacy result — the executable dialect
-leaves `gas()` and the whole call/create family stuck. The one meta-theoretic property that *is*
-proven for the open world is effect-classification soundness (`EVM.effects_sound_withExternal`).
-Consequently, programs that call `gas()` or perform external calls/creations are outside the
-determinism and adequacy guarantees.
+### `selfdestruct`
 
 `selfdestruct` is local and terminal rather than open-world: it does not invoke unknown code. Its
-executable semantics transfers the current balance, appends the executing address to the ordered
-destruction schedule, and halts. `ExecEnv.createdThisTx` selects the post-Cancun behavior when the
-beneficiary aliases the executing address: a pre-existing account keeps its balance, whereas an
-account created in this transaction burns it. Actual fork-dependent account deletion is deferred
-to transaction finalization and is intentionally outside this frame semantics. External call and
-creation worlds carry newly scheduled destructions so nested executions remain observable.
+executable semantics transfers the current balance, appends the executing address (together with its
+`createdThisTx` bit) to the ordered destruction schedule, and halts. `ExecEnv.createdThisTx` selects
+the post-Cancun behavior when the beneficiary aliases the executing address: a pre-existing account
+keeps its balance, whereas an account created in this transaction burns it. Recording the bit
+alongside each scheduled address keeps balance-transfer-only distinct from actual deletion. Actual
+fork-dependent account deletion is deferred to transaction finalization and is intentionally outside
+this frame semantics. External call and creation worlds carry newly scheduled destructions so nested
+executions remain observable.
 
-Two built-ins interact with gas and must be classified as **impure / non-deterministic** even
-though we do not model gas:
+### Gas
+
+Two built-ins interact with gas and are classified as **impure / non-deterministic** even though we
+do not model gas:
 
 - `gas()` returns *remaining* gas — a value that changes during execution. It is modeled as an
   oracle / non-deterministic read (never a constant; two `gas()` calls may differ, so they cannot be
-  CSE'd). Concretely, the open-world dialects (`evmWithExternal`/`evmWithCalls`) interpret
-  `gas()` via `builtinWithExternal`: it returns an *arbitrary* word and leaves the state unchanged,
-  so `call(gas(), …)` — the idiomatic call pattern — is derivable. The executable reference dialect
+  CSE'd). Concretely, the open-world dialects (`evmWithExternal`/`evmWithCalls`) interpret `gas()`
+  via `builtinWithExternal`: it returns an *arbitrary* word and leaves the state unchanged, so
+  `call(gas(), …)` — the idiomatic call pattern — is derivable. The executable reference dialect
   `evm` has no oracle, so `gas()` stays stuck there (`stepOp .gas = none`); this is why `evm` is
   deterministic while the open-world dialects are not.
 - gas forwarding + failure of `call`/`callcode`/`staticcall`/`delegatecall`: external call outcomes
@@ -263,31 +265,85 @@ This is what makes dead-effect reasoning sound at the frame level. The raw exact
 (`EquivStmt`/`EquivBlock`, which compare the full `Step` state) cannot equate a dead write before a
 revert with the bare revert, because they see the un-rolled-back write. Observed through
 `committedState` they *are* equal: `EVM.deadStore_revert_obs_eq` proves `{ sstore(0,1); revert(0,0) }`
-and `{ revert(0,0) }` have identical committed runs from every initial state.
+and `{ revert(0,0) }` have identical committed runs from every non-static initial state. (The
+non-static condition is essential and faithful: under `STATICCALL` the `sstore` itself halts with
+`.invalid`, so the two programs genuinely differ.)
 
-## Meta-theory / what we are building toward
+## What is proven
 
-### Yul→Yul optimization correctness (this repo's proof surface)
+- **Determinism** (`YulSemantics/Determinism.lean`). `Step.det` by a single rule induction, given
+  deterministic built-ins; corollaries for the five conceptual relations and whole-program runs.
+  `EVM.evm_deterministic` discharges the hypothesis for the EVM dialect (`EVM.run_det`). Two design
+  notes make this a standard tactic proof: (1) `switch` dispatches through `selectSwitch` (requiring
+  `[DecidableEq D.Value]` on the judgment), so it is deterministic by construction; (2) the semantics
+  is encoded as a **single indexed judgment** `Step` over a `Code`/`Res` sum rather than five literal
+  `mutual` relations — Lean's `induction` tactic does not support mutual inductive predicates and the
+  equation compiler cannot compile mutual structural recursion over them, so the single-judgment
+  encoding is what makes this (and every future derivation induction) a standard `induction … with`
+  proof. The five relation names survive as abbreviations with unchanged signatures.
+- **Adequacy** (`YulSemantics/Adequacy.lean`). Under `ExecDialect.Lawful` (the executable `builtinFn`
+  agrees exactly with the relational `Builtin`; definitional for the EVM dialect): **soundness**
+  (interpreter `.ok` at any fuel ⇒ derivation; induction on fuel) and **completeness** (derivation ⇒
+  interpreter `.ok` at every sufficiently large fuel; rule induction — the `∀ n ≥ N` form embeds fuel
+  monotonicity, so no separate monotonicity lemma). Combined as `Interp.adequacy` /
+  `Interp.run_adequacy`, instantiated hypothesis-free for EVM as `EVM.run_adequacy`.
+- **Effect-classification soundness** (`EVM.effects_sound`, `EVM.effects_sound_withExternal`) — the
+  `deterministic`/`writes`/`halts` flags are proven to over-approximate the built-in semantics.
+- **Optimization meta-theory** (`YulSemantics/Equiv.lean`, `YulSemantics/Rewrites.lean`). Pointwise
+  semantic equivalences for all five syntactic classes (`EquivExpr`/`EquivArgs`/`EquivStmt`/
+  `EquivStmts`/`EquivBlock`, each an equivalence relation); behavior (`EquivBlock.run_iff`);
+  **congruence lemmas** for built-in/user calls (argument lists via `Forall₂`),
+  `let`/`assign`/`exprStmt`/`cond`/`switch` (labels + case blocks + default) / `forLoop`
+  (cond/post/body), sequences, and blocks. Validated by sample EVM rewrites: constant folding
+  `add(2,3) ≈ 5`, the identity `add(x,0) ≈ x` (stated for a *variable* — `add(e,0) ≈ e` is false for
+  a multi-valued `e`, a real optimizer precondition surfaced by the proofs), and that identity lifted
+  through congruence to `sstore(0, add(x,0)) ≈ sstore(0, x)` at statement and whole-program (DSL)
+  level.
+- **Frame-boundary observation** (`YulSemantics/Observation.lean`) — `committedState`, `RunCommitted`
+  (functional via `RunCommitted.det`), and `deadStore_revert_obs_eq`.
+- **Objects** (`YulSemantics/Object.lean`, `YulSemantics/ObjectRun.lean`) — a layout-consistency
+  predicate relating a compiler's byte layout to an object, and a symbolic proof that the canonical
+  constructor (`datacopy`/`return`) returns a data segment's bytes.
 
-Target property: **semantic preservation** = functional equivalence of whole-program behavior. Tools:
+### Meta-theory scope (which guarantees apply to which dialect)
 
-1. **Behavior / observation**: halting result (`return`/`revert`/`stop`/exception + returndata),
-   resulting storage/logs, and terminate-vs-diverge. (No gas.) The `Step` judgment records *which*
-   halt fired in the state (`halted`) but, being shared with sub-frames, does not itself roll back a
-   halted frame's accumulated effects — so a whole-program observation is taken through
-   **`EVM.committedState`** (see "Frame-boundary observation" below), which commits normal/`stop`/
-   `return`/`selfdestruct` halts and rolls a `revert`/`invalid`/`invalidMemoryAccess` frame back to
-   its initial state (keeping only the outcome marker and exposed return data). `EVM.RunCommitted`
-   is the observed whole-program run; with `EVM.run_det` it is functional (`RunCommitted.det`).
-2. **Contextual equivalence as a congruence**: expression- and statement-equivalence proven to be a
-   *congruence* w.r.t. every AST constructor. Local rewrites (`add(x,0) → x`, constant folding, …)
-   are proven locally and lifted into any context by this congruence lemma — the workhorse.
-3. **Effect classification** (above): required for CSE, dead-code elimination, reordering.
-4. **Binding discipline for inlining**: substitution / α-renaming with capture avoidance.
-5. **Determinism lemma**: the EVM-dialect semantics is deterministic given the dialect (modulo the
-   oracle inputs), which turns "equivalence" into "same result."
+The determinism lemma, the fuel-indexed interpreter, and the adequacy theorem are all stated for the
+**closed-world local dialect `EVM.evm`**. They do **not** apply to the **open-world
+`EVM.evmWithExternal` (call/create)**: that dialect is relational and may be non-deterministic (the
+environment picks the external response), so it is not covered by determinism; and because there is
+no universal executable choice for the open-world relation, it has neither an interpreter nor an
+adequacy result — the executable dialect leaves `gas()` and the whole call/create family stuck. The
+one meta-theoretic property that *is* proven for the open world is effect-classification soundness
+(`EVM.effects_sound_withExternal`). Consequently, programs that call `gas()` or perform external
+calls/creations are outside the determinism and adequacy guarantees.
 
-### Yul→EVM compiler correctness (future, separate repo)
+## What is not done, and why
+
+- **Yul→EVM compiler correctness** — out of scope for this repo (it lives in the separate compiler
+  project); the target is described under "Toward Yul→EVM compiler correctness" below.
+- **Inlining / function-body congruence.** There is no `funDef`-body congruence yet: rewriting inside
+  a function *body* changes the `FDecl` stored by block-hoisting, so relating the two programs needs a
+  relation on function environments ("environments with pointwise-equivalent bodies") threaded through
+  the judgment. That machinery belongs with function-level optimizations (inlining) and is deferred.
+  Relatedly, block congruence carries a `hoist`-agreement side condition (`rfl` for rewrites that do
+  not touch top-level `funDef` statements).
+- **`reads`-flag soundness.** `EffectsSound` proves the `deterministic`/`writes`/`halts` clauses; a
+  machine-checked soundness for `reads` (result independent of the unread part of the state) needs a
+  notion of state observation / read footprint, and is deferred. The flag is documented and currently
+  unused by any proof.
+- **Account-map consistency.** The abstract world maps (`balanceOf`/`nonceOf`/`extCodeOf`/
+  `extCodeHashOf`/`storageOf`) are independent; the intended cross-map invariants (e.g. `extcodehash`
+  = keccak of code for non-empty accounts, zero for empty ones) are captured by an optional
+  `ExecEnv.WF` predicate available to downstream proofs, not globally enforced. `extcodehash` itself
+  is computed through `projectedCodeHash` so it is internally consistent with code/nonce/balance.
+- **Program logic (Hoare / separation).** An optional convenience layer, deferred until needed — see
+  below.
+- **Divergence reasoning.** Deferred indefinitely — not needed for the main compiler theorem (see
+  below).
+- **Gas.** Not modeled by design (§1). Within-frame out-of-gas is not expressible; out-of-gas in a
+  callee is subsumed by the open-world call relation.
+
+## Toward Yul→EVM compiler correctness (future, separate repo)
 
 Because the EVM semantics **tracks gas fully**, the EVM machine always terminates (normal halt or
 out-of-gas). Two consequences:
@@ -326,56 +382,8 @@ features, and is deferred until needed:
 - **Separation logic** for the machine state: memory and storage are finite word→word maps, so
   points-to assertions + the frame rule give local reasoning about `mload`/`mstore`/`sload`/`sstore`.
 
-Soundness is proven against the relational semantics. This layer is a convenience, not required for
-the equivalence/simulation results above.
-
-## Build plan (phases)
-
-- **Phase 0** — Toolchain: add Mathlib (pinned to the toolchain), CI, module layout. *(done)*
-- **Phase 1** — AST (`Literal`/`Expr`/`Stmt`/`Object`) + `Outcome`. *(done — `YulSemantics/Ast.lean`)*
-- **Phase 2** — `Dialect` abstraction + effect classification; gas-free EVM dialect instance
-  (`Value := BitVec 256`). *(done — `YulSemantics/Dialect.lean`, `YulSemantics/Dialect/EVM.lean`)*
-- **Phase 3** — Big-step relational semantics (the ground truth): scoping, block-level function
-  pre-collection, multiple return values, outcome propagation. *(relation done —
-  `YulSemantics/BigStep.lean`, smoke-tested in `YulSemantics/Examples.lean`; determinism proven —
-  see below)*
-- **Phase 4** — Concrete-syntax DSL (Yul syntax → AST). *(done — `YulSemantics/Syntax.lean`;
-  `yul% { … }` → `Block EVM.Op`, round-trip-tested in `YulSemantics/Examples.lean`)*
-- **Interpreter** — total fuel-indexed executable interpreter over an `ExecDialect`. *(done —
-  `YulSemantics/Interp.lean`; runs programs in `Examples.lean` via `native_decide`)*
-- **Phase 5** — Meta-theory foundations: behavior/observation, contextual equivalence + congruence
-  lemma, sample local-rewrite equivalences validating the framework.
-- **Determinism** — *(done — `YulSemantics/Determinism.lean`)*. `Step.det` by a single rule
-  induction, given deterministic built-ins; corollaries for the five conceptual relations and
-  whole-program runs; `EVM.evm_deterministic` discharges the hypothesis for the EVM dialect
-  (`EVM.run_det`). Two design notes baked in along the way: (1) `switch` dispatches through
-  `selectSwitch` (requiring `[DecidableEq D.Value]` on the judgment), making it deterministic by
-  construction; (2) the semantics is encoded as a **single indexed judgment** `Step` over a
-  `Code`/`Res` sum rather than five literal `mutual` relations — Lean's `induction` tactic does not
-  support mutual inductive predicates and the equation compiler cannot compile mutual structural
-  recursion over them, so the single-judgment encoding is what makes this (and every future
-  derivation induction: adequacy, compiler simulation) a standard tactic proof. The five relation
-  names survive as abbreviations with unchanged signatures.
-- **Adequacy** — *(done — `YulSemantics/Adequacy.lean`)*. Under `ExecDialect.Lawful` (the executable
-  `builtinFn` agrees exactly with the relational `Builtin`; definitional for the EVM dialect):
-  **soundness** (interpreter `.ok` at any fuel ⇒ derivation; induction on fuel) and **completeness**
-  (derivation ⇒ interpreter `.ok` at every sufficiently large fuel; rule induction — the
-  `∀ n ≥ N` form embeds fuel monotonicity, so no separate monotonicity lemma). Combined as
-  `Interp.adequacy` / `Interp.run_adequacy`, instantiated hypothesis-free for EVM as
-  `EVM.run_adequacy`. With determinism, the interpreter is pinned down as *the* computational
-  content of the semantics.
-- **Phase 5** — optimization meta-theory. *(first cut done — `YulSemantics/Equiv.lean`,
-  `YulSemantics/Rewrites.lean`)*. Pointwise semantic equivalences for all five syntactic classes
-  (`EquivExpr`/`EquivArgs`/`EquivStmt`/`EquivStmts`/`EquivBlock`, each an equivalence relation);
-  behavior (`EquivBlock.run_iff`); **congruence lemmas** for built-in/user calls (argument lists via
-  `Forall₂`), `let`/`assign`/`exprStmt`/`cond`/`switch` (labels + case blocks + default) /`forLoop`
-  (cond/post/body), sequences, and blocks. Two honest hoisting-induced side conditions, documented
-  in the module: block congruence needs `hoist`-agreement (`rfl` for non-`funDef` rewrites), and
-  `funDef`-body congruence is deferred to the function-environment relation that inlining will need.
-  Validated by sample EVM rewrites: constant folding `add(2,3) ≈ 5`, the identity `add(x,0) ≈ x`
-  (stated for a *variable* — `add(e,0) ≈ e` is false for multi-valued `e`, a real optimizer
-  precondition surfaced by the proofs), and the identity lifted through congruence to
-  `sstore(0, add(x,0)) ≈ sstore(0, x)` at statement and whole-program (DSL) level.
+Soundness would be proven against the relational semantics. This layer is a convenience, not required
+for the equivalence/simulation results above.
 
 ## Dependencies
 

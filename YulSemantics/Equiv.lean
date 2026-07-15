@@ -4,8 +4,8 @@ import YulSemantics.BigStep
 /-!
 # YulSemantics.Equiv
 
-Phase 5 foundations: **semantic equivalence** and its **congruence** properties — the layer
-Yul→Yul optimization-pass correctness proofs stand on (see `DESIGN.md`).
+The optimization meta-theory foundations: **semantic equivalence** and its **congruence** properties
+— the layer Yul→Yul optimization-pass correctness proofs stand on (see `DESIGN.md`).
 
 ## Equivalences
 
