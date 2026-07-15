@@ -41,8 +41,16 @@ list of values with a new state, or a halt with a new state (payload in the stat
 
 ## Conventions / points to revisit
 
-* **Argument evaluation is right-to-left** (Yul's specified order); values are collected in source
-  order. TODO: confirm against the Yul spec / the EVM repo.
+* **Argument evaluation is right-to-left**, and this is intentional and spec-conformant: the Yul
+  specification mandates that a function call's arguments are evaluated right-to-left
+  (<https://docs.soliditylang.org/en/latest/yul.html>). This semantics evaluates them in that order
+  while collecting the resulting values back into source order, so the value list handed to a
+  built-in or user function matches the parameter order. The order is *observable* (an argument may
+  `sstore`/`mstore` or call, so evaluation order affects the world seen by later arguments): it is a
+  real semantic commitment, not an implementation detail, and any compiler pass must preserve it.
+  `solc` has historically shipped miscompilations from breaking exactly this ordering — see the
+  full-inliner argument-evaluation-order bug
+  (<https://www.soliditylang.org/blog/2023/07/19/full-inliner-non-expression-split-argument-evaluation-order-bug/>).
 * **Truthiness**: a condition is true iff its value `≠ D.zero` (`D.zero := litValue 0`), matching the
   EVM convention `0 = false`.
 * Ill-formed situations (unbound variable, arity mismatch, `break` outside a loop, …) simply have no

@@ -48,6 +48,22 @@ In place:
 - **Optimization meta-theory** — pointwise program equivalence, congruence lemmas, and a
   verified-pass skeleton.
 
+**Scope of the meta-theory (important).** The determinism proof, the executable interpreter, and the
+adequacy theorem are established for the **closed-world local dialect `EVM.evm`** only. They do *not*
+extend to the **open-world dialect `EVM.evmWithExternal` (call/create)**:
+
+- `evmWithExternal` is *relational and may be non-deterministic* (an external call/create outcome is
+  a response chosen by an arbitrary environment), so the determinism theorem does not apply to it.
+- It has **no executable interpreter and no adequacy theorem**: there is deliberately no universal
+  executable choice for an open-world relation. In the executable dialect (`EVM.evm` / `EVM.exec`),
+  `gas()` and the call/create family are intentionally left **stuck** (no reduction).
+- What *does* carry over to the open world is the effect-classification soundness
+  (`EVM.effects_sound_withExternal`); the call/create/`gas()` semantics are otherwise the boundary
+  described in [`DESIGN.md`](./DESIGN.md), not covered by the determinism/adequacy guarantees above.
+
+So: do not read "deterministic" or "adequate" as statements about programs that call `gas()` or make
+external calls/creations.
+
 See the annotated build plan at the end of [`DESIGN.md`](./DESIGN.md) for details and open threads.
 
 ## Worked example

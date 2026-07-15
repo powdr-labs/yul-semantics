@@ -54,13 +54,35 @@ implies the built-in never changes the state).
 * `deterministic` — same arguments and state always yield the same result (so the call may be
   duplicated / commonly-subexpression-eliminated). `gas()` and external call outcomes are *not*
   deterministic.
-* `reads`  — the result may depend on the machine state.
+* `reads`  — the built-in *observes* the prior machine state (see the field doc below for the precise
+  meaning and why it is currently the one flag without a machine-checked soundness proof).
 * `writes` — the built-in may change the machine state.
 * `halts`  — the built-in may halt execution instead of returning. -/
 structure Effects where
   /-- Same arguments and state always yield the same result. -/
   deterministic : Bool
-  /-- The result may depend on the machine state. -/
+  /-- The built-in **observes** the prior machine state.
+
+  Precise intended meaning: `reads = false` promises that the built-in does *not consult* the current
+  state contents in deciding its behavior — both its return values and the *delta* it applies to the
+  state are a function of its arguments alone. Crucially this is orthogonal to `writes`: a blind
+  overwrite such as `mstore(p, v)`/`sstore(k, v)` is non-reading (`reads = false`) even though it is
+  writing (`writes = true`), because the bytes it stores and where it stores them are determined by
+  the arguments, not by what the state previously held. Conversely `mload`, `keccak256`, `sload`, and
+  the `*copy` family are reading: their result or the data they move depends on the current state.
+  `reads = true` is the conservative over-approximation ("may observe state").
+
+  This is what optimizations need in order to move a non-reading write across an unrelated read, or
+  to rule out a read-after-write dependency between two calls.
+
+  **Why this flag is currently unproven** (unlike `deterministic`/`writes`/`halts`, which
+  `Dialect.EffectsSound` turns into machine-checked guarantees): stating `reads = false` formally
+  requires a *notion of state observation* — a way to say two states "agree on the part this built-in
+  could look at" (a read footprint / framing relation) and then that the built-in's result and delta
+  are invariant under changing the rest. This repo does not yet have that framing apparatus, so a
+  `NonReading` predicate and a corresponding `EffectsSound` field are left as future work rather than
+  asserted. The `reads` assignments in a concrete dialect are therefore *documented, audited-for-
+  consistency* over-approximations, not yet formally discharged. -/
   reads  : Bool
   /-- The built-in may change the machine state. -/
   writes : Bool
@@ -126,8 +148,15 @@ def NonHalting (op : D.Op) : Prop :=
 /-- Soundness of the effect classification: each `false` flag is an actual guarantee about
 `Builtin`. Concrete dialects are expected to prove this; generic optimization lemmas take it as a
 hypothesis. Because `Op` is a finite enum for concrete dialects, this is provable by case analysis.
-The EVM instance proves it as `EVM.effects_sound`. A `reads = false` guarantee (result independent
-of state) needs a notion of state observation and is deferred. -/
+The EVM instance proves it as `EVM.effects_sound`.
+
+There is deliberately **no `read` field here**: a `reads = false` guarantee (the built-in does not
+observe the prior state; see `Effects.reads`) needs a notion of state observation — a read-footprint /
+framing relation stating that the result and the state delta are invariant under changes to the part
+of the state the built-in cannot see. That apparatus does not exist in this development yet, so
+`reads` remains a documented, audited over-approximation rather than a machine-checked guarantee, and
+adding a `Dialect.NonReading` predicate plus a `read` field to this structure is tracked as future
+work. The other three flags are discharged below. -/
 structure EffectsSound : Prop where
   det   : ∀ op, (D.effects op).deterministic = true → D.Deterministic op
   write : ∀ op, (D.effects op).writes = false → D.NonWriting op

@@ -862,14 +862,24 @@ def builtin (external : ExternalCalls) :
   builtinWithExternal external ExternalCreates.none
 
 /-- Effect classification of each built-in (total on the finite `Op` enum). The flags
-over-approximate (see `Effects`); the unmodeled gas read gets the conservative `top`. -/
+over-approximate (see `Effects`); the unmodeled gas read gets the conservative `top`.
+
+On the `reads` column specifically (`reads = true` ⇔ the built-in *observes* the prior state; see the
+`Effects.reads` field doc for the precise, still-unproven-in-Lean meaning): note that `reads` is
+independent of `writes`. The four "deterministic writes (no state read)" entries below —
+`mstore`/`mstore8`/`sstore`/`tstore` — are deliberately `reads := false` **despite** `writes := true`,
+because a blind store's return values (none) and the memory/storage delta it applies are fixed by its
+arguments and never consult the prior contents of that slot; this is the intended meaning, not an
+oversight. The dual is `mload`/`keccak256`/`sload`/`*copy`, which read state contents and so are
+`reads := true`. This whole table has been audited against that meaning and is internally consistent;
+a machine-checked `reads` soundness proof is future work (again, see `Effects.reads`). -/
 def effects : Op → Effects
-  -- pure computation
+  -- pure computation: no state at all → reads := false
   | .add | .sub | .mul | .div | .sdiv | .mod | .smod | .addmod | .mulmod | .exp
   | .signextend | .clz | .lt | .gt | .slt | .sgt | .eq | .iszero
   | .and | .or | .xor | .not | .byte | .shl | .shr | .sar | .pop =>
       { deterministic := true, reads := false, writes := false, halts := false }
-  -- deterministic state reads
+  -- deterministic state reads: result depends on current state → reads := true
   | .msize | .sload | .tload
   | .calldataload | .calldatasize | .codesize | .returndatasize
   | .address | .origin | .caller | .callvalue | .gasprice | .selfbalance
@@ -878,27 +888,32 @@ def effects : Op → Effects
   | .balance | .extcodesize | .extcodehash | .blockhash | .blobhash
   | .datasize | .dataoffset =>
       { deterministic := true, reads := true, writes := false, halts := false }
-  -- deterministic writes (no state read)
+  -- deterministic *blind* writes: the stored bytes/slot come from the arguments, the prior contents
+  -- are never observed → reads := false even though writes := true (see the doc comment above)
   | .mstore | .mstore8 | .sstore | .tstore =>
       { deterministic := true, reads := false, writes := true, halts := false }
-  -- deterministic read+write (memory reads can expand memory, observable through `msize`)
+  -- deterministic read+write: these move/hash *current* state contents, and memory reads can expand
+  -- memory (observable through `msize`) → reads := true, writes := true
   | .keccak256 | .mload | .mcopy | .calldatacopy | .codecopy | .extcodecopy | .datacopy
   | .log0 | .log1 | .log2 | .log3 | .log4 =>
       { deterministic := true, reads := true, writes := true, halts := false }
-  -- returndata bounds failure is an exceptional halt
+  -- reads returndata; returndata bounds failure is an exceptional halt
   | .returndatacopy =>
       { deterministic := true, reads := true, writes := true, halts := true }
-  -- calls and creates return normally to the caller but otherwise have every effect
+  -- calls and creates return normally to the caller but otherwise have every effect (they observe
+  -- and mutate the world) → reads := true
   | .call | .callcode | .delegatecall | .staticcall | .create | .create2 =>
       { deterministic := false, reads := true, writes := true, halts := false }
   -- remaining gas interaction: conservative
   | .gas => Effects.top
-  -- deterministic terminal world update
+  -- deterministic terminal world update: reads balance to transfer → reads := true
   | .selfdestruct =>
       { deterministic := true, reads := true, writes := true, halts := true }
-  -- halting
+  -- halting with no return data: sets the halt payload (writes := true) but does not consult prior
+  -- state to do so (reads := false)
   | .stop | .invalid =>
       { deterministic := true, reads := false, writes := true, halts := true }
+  -- halting with return/revert data read from memory → reads := true
   | .ret | .revert =>
       { deterministic := true, reads := true, writes := true, halts := true }
 
