@@ -12,7 +12,7 @@ its built-in functions; a `Dialect` packages everything dialect-specific:
 * a (possibly non-deterministic) interpretation of built-ins (`Builtin`), and
 * an effect classification of built-ins (`effects`) used to justify optimizations.
 
-The big-step semantics (Phase 3) is parameterized over a `Dialect`; the EVM instance lives in
+The big-step semantics is parameterized over a `Dialect`; the EVM instance lives in
 `YulSemantics.Dialect.EVM`. See `DESIGN.md` §3.
 
 This module is dependency-light (no Mathlib): it only needs the AST.

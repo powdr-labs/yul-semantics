@@ -6,7 +6,7 @@ import YulSemantics.Dialect
 
 A gas-free reference instance of the EVM dialect, with `Value := BitVec 256` (see `DESIGN.md` §4).
 
-Built-ins are a finite enum `Op` (Option D), covering the **full user-facing Yul EVM dialect**
+Built-ins are a finite enum `Op`, covering the **full user-facing Yul EVM dialect**
 (through the Fusaka fork, incl. `clz` (EIP-7939), `mcopy`, `blobhash`, `blobbasefee`).
 `stepOp`/`effects` dispatch structurally on the constructor — fast to reduce and clean to prove
 about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the frontend.
