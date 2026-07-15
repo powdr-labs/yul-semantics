@@ -260,7 +260,10 @@ def committedState (st0 st' : EvmState) : EvmState :=
 @[simp] theorem committedState_none {st0 st' : EvmState} (h : st'.halted = none) :
     committedState st0 st' = st' := by simp [committedState, h]
 
-@[simp] theorem committedState_commit {st0 st' : EvmState} {k data}
+/-- A committing halt commits `st'` unchanged. Not a `simp` lemma: its left-hand side
+`committedState st0 st'` does not determine `k`/`data` (they appear only in the hypotheses), so
+`simp` could never apply it — invoke it by name or pass it explicitly to `simp`. -/
+theorem committedState_commit {st0 st' : EvmState} {k data}
     (h : st'.halted = some (k, data)) (hk : k.commits = true) :
     committedState st0 st' = st' := by simp [committedState, h, hk]
 
