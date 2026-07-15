@@ -197,7 +197,8 @@ structure ExecEnv where
   projections synchronized.
 * `returndata` — the return-data buffer (written by open-world calls and creations).
 * `logs` — emitted log records, in order.
-* `selfdestructs` — account addresses scheduled for transaction-finalization deletion, in order.
+* `selfdestructs` — accounts that executed `selfdestruct`, each paired with its `createdThisTx`
+  bit, in order (see the field docstring).
 * `halted` — set once a halting built-in fires: its kind and the return/revert data. -/
 structure EvmState where
   /-- Byte-addressable memory, unbounded, default `0`. -/
@@ -214,9 +215,12 @@ structure EvmState where
   returndata : List UInt8
   /-- Emitted log records, in order. -/
   logs       : List LogEntry
-  /-- Accounts that have executed `selfdestruct`, in execution order. Deletion is deferred until
-  transaction finalization and is fork-dependent. -/
-  selfdestructs : List U256
+  /-- Accounts that have executed `selfdestruct`, in execution order. Each entry pairs the account
+  address with its `createdThisTx` bit at destruction time: post-EIP-6780 (Cancun) the account is
+  actually deleted at transaction finalization only when that bit is `true` (created in this
+  transaction); when it is `false` the `selfdestruct` performed a balance transfer only and leaves
+  the account in place. Recording the bit keeps the schedule lossless for a transaction semantics. -/
+  selfdestructs : List (U256 × Bool)
   /-- Set once a halting built-in fires: its kind and the return/revert data. -/
   halted     : Option (HaltKind × List UInt8)
 
@@ -256,6 +260,19 @@ def projectedCodeHash (env : ExecEnv) (balanceOf : U256 → U256) (address : U25
   if (env.nonceOf address).toNat = 0 ∧ (balanceOf address).toNat = 0 ∧
       (env.extCodeOf address).length = 0 then 0
   else env.keccakOf (env.extCodeOf address)
+
+/-- Intended world-consistency invariants for an execution environment. These are *not* enforced by
+the state type (the fields are independent maps), but a concrete world always satisfies them, so
+`WF` is provided as an optional hypothesis for downstream proofs.
+
+* `extCodeHashOf` agrees with the derived `projectedCodeHash` rule (empty account ⇒ `0`; otherwise
+  the Keccak hash of the account's code). This is the invariant the `extcodehash` opcode now reads
+  through directly, so it rules out worlds the EVM never has (a code-hash decoupled from the code,
+  nonce, and balance).
+* `selfBalance` is the balance the global map assigns to the executing account. -/
+def ExecEnv.WF (env : ExecEnv) : Prop :=
+  (∀ a, env.extCodeHashOf a = projectedCodeHash env env.balanceOf a) ∧
+    env.selfBalance = env.balanceOf env.address
 
 /-- The `k`-th least-significant byte of a word. -/
 @[inline] def byteAt (v : U256) (k : Nat) : UInt8 := UInt8.ofNat (v >>> (8 * k)).toNat
@@ -346,7 +363,7 @@ def finishSelfdestruct (st : EvmState) (beneficiary : U256) : EvmState :=
       balanceOf := balances
       extCodeHashOf := codeHashes
       selfBalance }
-    selfdestructs := st.selfdestructs ++ [self]
+    selfdestructs := st.selfdestructs ++ [(self, st.env.createdThisTx)]
     halted := some (.selfdestruct, []) }
 
 /-! ### Open-world external calls -/
@@ -398,8 +415,9 @@ structure CallWorld where
   transient     : U256 → U256
   /-- Log records emitted by the external execution, in order. -/
   logs          : List LogEntry
-  /-- Destructions scheduled by the external execution, in order. -/
-  selfdestructs : List U256
+  /-- Destructions scheduled by the external execution, in order. Each pairs the destroyed account
+  with its `createdThisTx` bit (see `EvmState.selfdestructs`). -/
+  selfdestructs : List (U256 × Bool)
 
 /-- The caller-visible result of a completed external execution. A false `success` represents
 revert, exceptional failure, depth failure, or another EVM call failure. `returndata` is preserved
@@ -452,14 +470,18 @@ structure CreateRequest where
 
 /-- The caller-visible result of a completed creation attempt. `some address` means deployment
 succeeded (including the mathematically possible address word `0`); `none` means the opcode pushes
-zero. `world` is the actually committed post-world on every path, including a creator nonce bump
-that survives collision, init-code revert, or deployment failure. -/
+zero. `world` describes the successful post-world in full; on failure (`created = none`) only the
+creator nonce bump survives (`world.nonceOf`), while all other components of `world` are discarded
+by `finishCreate`, which rolls back to the pre-state. This mirrors real EVM: a failed create
+(collision, init-code revert, or deployment failure) reverts every state change except the
+creator's nonce (and gas). -/
 structure CreateResponse where
   /-- The deployed address on success, or `none` when the opcode returns zero. -/
   created    : Option U256
   /-- Revert data on failure. Successful creation exposes an empty return-data buffer. -/
   returndata : List UInt8
-  /-- The committed post-world, including effects that survive failed deployment. -/
+  /-- The successful post-world in full; on failure only its `nonceOf` (the creator nonce bump) is
+  committed by `finishCreate`. -/
   world      : CallWorld
 
 /-- Open-world interpretation of contract creation. The relation may summarize arbitrary init-code
@@ -542,22 +564,39 @@ def CreateResponse.visibleReturnData (response : CreateResponse) : List UInt8 :=
   if response.created.isSome then [] else response.returndata
 
 /-- Complete a creation attempt after the external relation supplies its response. Reading init
-code expands caller memory. The response world is always the committed post-world because the
-creator nonce can advance even when deployment returns zero. -/
+code expands caller memory. On success (`created.isSome`) the full response world is installed. On
+failure (`created = none`) the creation is rolled back structurally: the pre-state's storage,
+transient storage, balances, logs, and every other component are preserved, and only the creator
+nonce bump (`response.world.nonceOf`) is committed. This makes the failed-create rollback provable
+(`finishCreate_failure_storage`) rather than relying on the external relation to reconstruct the
+pre-state in `response.world`. -/
 def finishCreate (st : EvmState) (response : CreateResponse) (offset size : Nat) : EvmState :=
-  { response.world.install (touchMemory st offset size) with
-    returndata := response.visibleReturnData }
+  let touched := touchMemory st offset size
+  let committed :=
+    if response.created.isSome then response.world.install touched
+    else { touched with env := { touched.env with nonceOf := response.world.nonceOf } }
+  { committed with returndata := response.visibleReturnData }
 
 @[simp] theorem finishCreate_returndata (st response offset size) :
     (finishCreate st response offset size).returndata = response.visibleReturnData := rfl
 
-@[simp] theorem finishCreate_storage (st response offset size key) :
-    (finishCreate st response offset size).storage key = response.world.storage key := by
-  simp [finishCreate, CallWorld.install]
+/-- A failed create rolls back storage to the pre-state. -/
+@[simp] theorem finishCreate_failure_storage (st response offset size key)
+    (h : response.created = none) :
+    (finishCreate st response offset size).storage key = st.storage key := by
+  simp [finishCreate, h, touchMemory]
 
+/-- A successful create installs the response world's storage. -/
+@[simp] theorem finishCreate_success_storage (st response offset size key)
+    (h : response.created.isSome = true) :
+    (finishCreate st response offset size).storage key = response.world.storage key := by
+  simp [finishCreate, h, CallWorld.install]
+
+/-- The creator nonce bump is committed on both the success and failure paths. -/
 @[simp] theorem finishCreate_nonce (st response offset size address) :
     (finishCreate st response offset size).env.nonceOf address = response.world.nonceOf address := by
-  simp [finishCreate, CallWorld.install]
+  simp only [finishCreate]
+  split <;> simp [CallWorld.install]
 
 @[simp] theorem finishCall_returndata (kind st response inputOffset inputSize outputOffset
     outputSize) :
@@ -770,7 +809,7 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
           some (.ok [] { touchMemory st dst.toNat n.toNat with
             memory := copyInto st.memory dst.toNat src.toNat n.toNat (st.env.extCodeOf a) })
       | _ => none
-  | .extcodehash => rd1 st.env.extCodeHashOf args st
+  | .extcodehash => rd1 (fun a => projectedCodeHash st.env st.env.balanceOf a) args st
   | .blockhash   => rd1 st.env.blockHashOf args st
   | .blobhash    => rd1 st.env.blobHashOf args st
   -- logging
@@ -1110,6 +1149,18 @@ example (x : U256) (st : EvmState) : stepOp .and [x, x] st = some (.ok [x] st) :
 example (st : EvmState) : stepOp .caller [] st = some (.ok [st.env.caller] st) := by simp [stepOp, rd0]
 example (st : EvmState) : stepOp .clz [0] st = some (.ok [256] st) := by simp [stepOp, un, clzVal]
 
+/-- `extcodehash` reads through `projectedCodeHash`, tying the code hash to the account's code,
+nonce, and balance rather than an unconstrained map. -/
+example (st : EvmState) (a : U256) :
+    stepOp .extcodehash [a] st =
+      some (.ok [projectedCodeHash st.env st.env.balanceOf a] st) := by simp [stepOp, rd1]
+
+/-- Under `ExecEnv.WF`, the `projectedCodeHash`-based `extcodehash` agrees with the raw
+`extCodeHashOf` map, so routing through the derived rule loses no behavior on consistent worlds. -/
+example (st : EvmState) (a : U256) (hwf : st.env.WF) :
+    stepOp .extcodehash [a] st = some (.ok [st.env.extCodeHashOf a] st) := by
+  simp [stepOp, rd1, hwf.1 a]
+
 /-! Effect-classification guards for the distinctions most relevant to memory expansion and
 control flow. The general semantic guarantee is `effects_sound` above. -/
 
@@ -1207,6 +1258,24 @@ example (st : EvmState) (response : CreateResponse) (address : U256)
     (h : response.created = some address) :
     (finishCreate st response 0 0).returndata = [] := by
   simp [CreateResponse.visibleReturnData, h]
+
+/-- A failed create (`created = none`) rolls storage back to the pre-state: only the creator nonce
+survives, exactly as CALL rolls back on failure. -/
+example (st : EvmState) (response : CreateResponse) (key : U256)
+    (h : response.created = none) :
+    (finishCreate st response 0 0).storage key = st.storage key := by
+  simp [finishCreate, h, touchMemory]
+
+/-- A successful create installs the response world's storage. -/
+example (st : EvmState) (response : CreateResponse) (key address : U256)
+    (h : response.created = some address) :
+    (finishCreate st response 0 0).storage key = response.world.storage key := by
+  simp [finishCreate, CallWorld.install, h]
+
+/-- The creator nonce bump is committed on both paths. -/
+example (st : EvmState) (response : CreateResponse) (a : U256) :
+    (finishCreate st response 0 0).env.nonceOf a = response.world.nonceOf a := by
+  simp
 
 example (creates : ExternalCreates) (st : EvmState) (response : CreateResponse)
     (hresponse : creates.Create
