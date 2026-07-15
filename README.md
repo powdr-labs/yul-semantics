@@ -36,7 +36,9 @@ In place:
   fuel-indexed executable interpreter with a proven adequacy (soundness + completeness) theorem.
 - **EVM dialect** — the full built-in set (through the upcoming hard fork), over `BitVec 256`,
   including an environment-supplied Keccak oracle that is abstract by default and executable when
-  a client supplies a concrete implementation.
+  a client supplies a concrete implementation. CALL and CREATE-family operations have additive
+  open-world relational interpretations supporting arbitrary nested calls, creations, and
+  reentrancy; the executable dialect leaves them stuck.
 - **Objects** — the Yul object layer (nested `code`/`data`/sub-objects): name resolution, a
   layout-consistency predicate relating a compiler's byte layout to an object, and a symbolic proof
   that the canonical constructor (`datacopy`/`return`) returns a data segment's bytes.

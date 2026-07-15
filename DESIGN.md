@@ -166,19 +166,32 @@ The EVM dialect proves that these flags soundly over-approximate `stepOp`: deter
 have at most one result, non-writing operations preserve the entire state, and non-halting
 operations only return normally (`EVM.effects_sound`).
 
-External calls use the relational dialect directly. `EVM.evmWithCalls external` takes an
-`ExternalCalls` relation from a call request and pre-call state to a completed response. The
-response contains return data and the caller-observable post-world; it may therefore summarize an
-arbitrarily deep execution, including callbacks into the current contract. The semantics itself
-does not assume code for the target address. It only fixes the EVM call boundary:
+External calls and contract creation use the relational dialect directly.
+`EVM.evmWithExternal calls creates` takes separate `ExternalCalls` and `ExternalCreates` relations
+from a request and pre-operation state to a completed response; `evmWithCalls` remains the
+call-only compatibility entry point. Responses contain return data and the caller-observable
+post-world, including global nonces and per-account persistent/transient storage. They may therefore
+summarize arbitrarily deep execution, including nested creation and callbacks into the current
+contract. Log entries carry their emitting address explicitly, so the post-world can also retain
+logs from arbitrary callees and init code. The semantics itself does not assume callee or init-code
+behavior. It fixes the boundary:
 
 - caller memory is copied into the request before the external execution;
 - successful non-static calls commit the supplied post-world;
 - failure and `staticcall` roll back all supplied world changes;
+- creation installs the supplied committed world on success or failure (so a creator nonce bump can
+  survive failed deployment) and returns the created address or zero;
 - return data is retained in full, while only its requested prefix is copied to caller memory; and
 - the call expression evaluates to the EVM success word.
 
-The executable `EVM.evm` keeps calls stuck. There is deliberately no universal executable choice
+For `create`/`create2`, the init-code memory slice is copied into the request and expands active
+memory. A successful response installs its selected address and clears returndata; failure returns
+zero and may expose revert data. The completed post-world is installed on every path because the
+creator nonce can advance even when init code reverts or deployment fails. CREATE2 requests also
+carry their salt. Global nonce and storage projections make these responses stable across every
+matching concrete world, including storage-dependent callees and reentrant execution.
+
+The executable `EVM.evm` keeps calls and creations stuck. There is deliberately no universal executable choice
 for an open-world relation. Compiler correctness instead instantiates `external` with responses
 realized by complete target-EVM executions. Those executions may take any number of steps and use
 an arbitrarily deep call stack, so the simulation boundary does not impose a no-reentrancy or
