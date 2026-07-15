@@ -222,6 +222,53 @@ def EvmState.init : EvmState :=
   { memory := fun _ => 0, activeWords := 0, storage := fun _ => 0, transient := fun _ => 0,
     env := default, returndata := [], logs := [], selfdestructs := [], halted := none }
 
+/-! ### Frame-boundary commit vs. rollback
+
+`stepOp` records only *which* halt fired (its `HaltKind` and exposed data) in `st.halted`; it does
+**not** itself undo the storage/transient/log/balance/selfdestruct effects a frame accumulated
+before halting. That is correct for a *sub-frame*, whose consequences are resolved by `finishCall`
+on return, but the top-level frame's effects are only resolved at the **observation** boundary,
+here.
+
+Real EVM keeps a frame's committed world changes only when it halts *normally* — `stop`/`return` (or
+runs off the end) — or via `selfdestruct`. A `revert`, an `invalid` (exceptional halt), or the
+out-of-bounds `returndatacopy` (`invalidMemoryAccess`) discards **all** of the frame's changes;
+only the exposed return/revert data survives. `HaltKind.commits`/`committedState` below apply this
+rollback at the boundary, keeping the `Step` judgment (which is shared with sub-frames) untouched. -/
+
+/-- Whether a halt *commits* the frame's accumulated world changes (`stop`/`return`/`selfdestruct`),
+as opposed to discarding them (`revert`/`invalid`/`invalidMemoryAccess`). -/
+def HaltKind.commits : HaltKind → Bool
+  | .stop | .ret | .selfdestruct => true
+  | .revert | .invalid | .invalidMemoryAccess => false
+
+/-- The frame's *observable* state at its boundary, given its initial state `st0` and its final
+`Step` state `st'`.
+
+* Not halted, or halted with a committing kind (`stop`/`return`/`selfdestruct`): the frame commits,
+  so the observation is `st'` unchanged.
+* Halted with a non-committing kind (`revert`/`invalid`/`invalidMemoryAccess`): every accumulated
+  effect is rolled back to `st0`, carrying over only the outcome marker (`halted`) and the exposed
+  return data (`returndata`) — exactly what real EVM leaves visible to the caller/transaction. -/
+def committedState (st0 st' : EvmState) : EvmState :=
+  match st'.halted with
+  | none => st'
+  | some (k, _) =>
+      if k.commits then st'
+      else { st0 with halted := st'.halted, returndata := st'.returndata }
+
+@[simp] theorem committedState_none {st0 st' : EvmState} (h : st'.halted = none) :
+    committedState st0 st' = st' := by simp [committedState, h]
+
+@[simp] theorem committedState_commit {st0 st' : EvmState} {k data}
+    (h : st'.halted = some (k, data)) (hk : k.commits = true) :
+    committedState st0 st' = st' := by simp [committedState, h, hk]
+
+theorem committedState_rollback {st0 st' : EvmState} {k data}
+    (h : st'.halted = some (k, data)) (hk : k.commits = false) :
+    committedState st0 st' = { st0 with halted := st'.halted, returndata := st'.returndata } := by
+  simp [committedState, h, hk]
+
 /-! ### Helpers -/
 
 /-- `b2w c` is the EVM boolean encoding: `1` for `true`, `0` for `false`. -/

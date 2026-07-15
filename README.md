@@ -47,6 +47,12 @@ In place:
 - **Surface tooling** — the `yul%` / `yulObject%` concrete-syntax DSL and a pretty-printer.
 - **Optimization meta-theory** — pointwise program equivalence, congruence lemmas, and a
   verified-pass skeleton.
+- **Frame-boundary observation** — `revert`/`invalid`/`invalidMemoryAccess` roll the frame's
+  committed world changes back at the observation boundary (only the outcome marker and exposed
+  return data survive), while `stop`/`return`/`selfdestruct` and normal termination commit. This is
+  applied by `committedState` and the observed whole-program run `RunCommitted` (functional, given
+  determinism), matching real EVM. It lets a dead store before a revert be proven observationally
+  invisible (`deadStore_revert_obs_eq`) — something the raw exact-state relations cannot see.
 
 See the annotated build plan at the end of [`DESIGN.md`](./DESIGN.md) for details and open threads.
 
