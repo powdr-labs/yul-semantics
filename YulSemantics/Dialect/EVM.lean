@@ -1329,12 +1329,16 @@ example (st : EvmState) : stepOp .gas [] st = none := rfl
 -- The idiomatic `call(gas(), …)` pattern now has a derivation: pick the gas oracle's word, then
 -- take any external response for the call it feeds.
 example (external : ExternalCalls) (st : EvmState) (g : U256) (response : CallResponse)
+    (hstatic : st.env.static = false)
     (hresponse : external.Call
       { kind := .call, gas := g, target := 2, value := 3, input := [] } st response) :
     (evmWithCalls external).Builtin .gas [] st (.ok [g] st) ∧
     (evmWithCalls external).Builtin .call [g, 2, 3, 0, 0, 0, 0] st
-      (.ok [response.flag] (finishCall .call st response 0 0 0 0)) :=
-  ⟨⟨g, rfl⟩, response, hresponse, rfl⟩
+      (.ok [response.flag] (finishCall .call st response 0 0 0 0)) := by
+  refine ⟨⟨g, rfl⟩, ?_⟩
+  have hc : ¬ (st.env.static ∧ (3 : U256) ≠ 0) := by simp [hstatic]
+  simp only [evmWithCalls, evmWithExternal, builtinWithExternal, if_neg hc]
+  exact ⟨response, hresponse, rfl⟩
 
 /-! Open-world creation guards. -/
 
