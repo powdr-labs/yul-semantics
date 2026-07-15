@@ -22,14 +22,15 @@ about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the f
   (`balance`, `extcodesize`/`extcodecopy`/`extcodehash`, `blockhash`, `blobhash`), `log0`–`log4`,
   the object-data ops (`dataoffset`/`datasize`/`datacopy`, layout-abstracted — see below and
   `YulSemantics.Object`), and the halting ops (`stop`/`return`/`revert`/`invalid`).
-* **Open-world modeled**: `call`/`callcode`/`delegatecall`/`staticcall` are interpreted by
-  `evmWithCalls external`. The supplied relation describes completed external executions and may
-  include arbitrary nested calls and re-entrant callbacks. The original executable `evm` keeps
-  these operations stuck because an open-world relation has no canonical evaluator.
+* **Open-world modeled**: `call`/`callcode`/`delegatecall`/`staticcall` and `create`/`create2` are
+  interpreted by `evmWithExternal calls creates`. The supplied relations describe completed
+  external executions and may include arbitrary nested calls, creations, and re-entrant callbacks.
+  The call-only `evmWithCalls` API remains available. The original executable `evm` keeps these
+  operations stuck because an open-world relation has no canonical evaluator.
 * **Enumerated but unmodeled** (`stepOp` returns `none`):
   - `gas` — **deliberately** not a function of our state: it is nondeterministic by design
     (`DESIGN.md`), so it must not be given a deterministic `stepOp` (that would license CSE).
-  - `create`/`create2`/`selfdestruct` — external world interaction.
+  - `selfdestruct` — external world interaction.
 * **Deliberately absent from `Op`**:
   - stack/control opcodes (`DUP*`, `SWAP*`, incl. EIP-663 `DUPN`/`SWAPN`, `PUSH*`, `POP`-as-stack-op,
     `JUMP*`, `PC`) — Yul has no stack; these are bytecode-level and belong to the EVM repo and the
@@ -99,8 +100,12 @@ inductive HaltKind
   | stop | ret | revert | invalid | invalidMemoryAccess
   deriving Repr, DecidableEq, Inhabited
 
-/-- One emitted log record: topics plus a copy of the logged memory slice. -/
+/-- One emitted log record, including the emitting account. Keeping the
+address explicit is necessary for logs produced by arbitrary callees or init
+code, whose address need not be the current frame's address. -/
 structure LogEntry where
+  /-- The low-160-bit account address that emitted the record, represented as a word. -/
+  address : U256
   /-- The indexed topics (`0`–`4` words, from `log0`…`log4`). -/
   topics : List U256
   /-- The logged memory slice. -/
@@ -154,6 +159,13 @@ structure ExecEnv where
   extCodeOf     : U256 → List UInt8 := fun _ => []
   /-- Code-hash lookup for any address (`extcodehash`). -/
   extCodeHashOf : U256 → U256 := fun _ => 0
+  /-- Account nonce lookup for every address. Required to make CREATE address derivation and
+  collision behavior stable across matching concrete worlds. -/
+  nonceOf       : U256 → U256 := fun _ => 0
+  /-- Persistent storage lookup for every account and key. -/
+  storageOf     : U256 → U256 → U256 := fun _ _ => 0
+  /-- Transient storage lookup for every account and key. -/
+  transientOf   : U256 → U256 → U256 := fun _ _ => 0
   /-- Block-hash lookup by block number (`blockhash`). -/
   blockHashOf   : U256 → U256 := fun _ => 0
   /-- Blob-hash lookup by index (`blobhash`). -/
@@ -171,8 +183,9 @@ structure ExecEnv where
 * `activeWords` — the number of 32-byte words made active by memory-touching operations; this is
   separate from memory contents because even a zero read or write expands memory for `msize`.
 * `storage` / `transient` — word-addressable maps, default `0`.
-* `env` — the immutable execution environment.
-* `returndata` — the return-data buffer (written by open-world external calls).
+* `env` — frame context plus global world projections; local writes keep the current-account
+  projections synchronized.
+* `returndata` — the return-data buffer (written by open-world calls and creations).
 * `logs` — emitted log records, in order.
 * `halted` — set once a halting built-in fires: its kind and the return/revert data. -/
 structure EvmState where
@@ -184,7 +197,7 @@ structure EvmState where
   storage    : U256 → U256
   /-- Word-addressable transient storage (`tload`/`tstore`), default `0`. -/
   transient  : U256 → U256
-  /-- The immutable execution environment. -/
+  /-- Frame context and global world projections. -/
   env        : ExecEnv
   /-- The return-data buffer (written by external calls). -/
   returndata : List UInt8
@@ -206,6 +219,17 @@ def EvmState.init : EvmState :=
 /-- Point-update of a word-addressable map. -/
 @[inline] def upd (f : U256 → U256) (k v : U256) : U256 → U256 :=
   fun x => if x = k then v else f x
+
+/-- The 160-bit EVM account key represented by a Yul word. -/
+@[inline] def accountKey (address : U256) : Nat := address.toNat % (2 ^ 160)
+
+/-- Point-update of an account-indexed word map. Account equality uses the EVM's low-160-bit
+address truncation, so all 256-bit aliases remain coherent with a concrete account map. -/
+@[inline] def updAccount (f : U256 → U256 → U256) (address key value : U256) :
+    U256 → U256 → U256 :=
+  fun a k => if accountKey a = accountKey address then
+    if k = key then value else f a k
+  else f a k
 
 /-- The `k`-th least-significant byte of a word. -/
 @[inline] def byteAt (v : U256) (k : Nat) : UInt8 := UInt8.ofNat (v >>> (8 * k)).toNat
@@ -266,7 +290,7 @@ def clzVal (a : U256) : U256 :=
 /-- Append a log record with the given topics and the memory slice `[p, p+n)`. -/
 def appendLog (st : EvmState) (topics : List U256) (p n : U256) : EvmState :=
   { touchMemory st p.toNat n.toNat with
-    logs := st.logs ++ [⟨topics, readBytes st.memory p.toNat n.toNat⟩] }
+    logs := st.logs ++ [⟨st.env.address, topics, readBytes st.memory p.toNat n.toNat⟩] }
 
 /-! ### Open-world external calls -/
 
@@ -291,10 +315,10 @@ structure CallRequest where
   /-- A copy of the selected caller-memory input slice. -/
   input  : List UInt8
 
-/-- The mutable, caller-observable world projection an external execution may change. It includes
-the current account's storage because an ordinary call can re-enter the caller, while
-`callcode`/`delegatecall` can modify it directly. `logs` contains only newly emitted records and is
-appended to the caller's existing log sequence. -/
+/-- The mutable, caller-observable world projection an external execution may change. It contains
+global nonce and storage views so arbitrary callees and init code are fully pinned by a matching
+concrete world. The separate current-account storage fields keep local built-ins simple.
+`logs` contains only newly emitted records and is appended to the caller's existing log sequence. -/
 structure CallWorld where
   /-- Balance of the executing account after the external execution. -/
   selfBalance   : U256
@@ -304,6 +328,12 @@ structure CallWorld where
   extCodeOf     : U256 → List UInt8
   /-- Post-execution code-hash view for every address. -/
   extCodeHashOf : U256 → U256
+  /-- Post-execution nonce view for every address. -/
+  nonceOf       : U256 → U256
+  /-- Post-execution persistent storage view for every address and key. -/
+  storageOf     : U256 → U256 → U256
+  /-- Post-execution transient storage view for every address and key. -/
+  transientOf   : U256 → U256 → U256
   /-- Post-execution storage of the executing account, including re-entrant changes. -/
   storage       : U256 → U256
   /-- Post-execution transient storage of the executing account. -/
@@ -341,6 +371,53 @@ def any : ExternalCalls where Call := fun _ _ _ => True
 
 end ExternalCalls
 
+/-! ### Open-world contract creation -/
+
+/-- The two EVM contract-creation operations. -/
+inductive CreateKind
+  | create | create2
+  deriving Repr, BEq, DecidableEq, Inhabited
+
+/-- Everything init code can observe at a creation boundary. The pre-create `EvmState` is supplied
+separately to `ExternalCreates.Create`; `initCode` is the already-copied caller-memory slice. -/
+structure CreateRequest where
+  /-- Whether the opcode derives its address from the creator nonce or a salt. -/
+  kind     : CreateKind
+  /-- Wei transferred to the account under construction. -/
+  value    : U256
+  /-- The exact init-code bytes copied from caller memory. -/
+  initCode : List UInt8
+  /-- `none` for CREATE and `some salt` for CREATE2. -/
+  salt     : Option U256
+
+/-- The caller-visible result of a completed creation attempt. `some address` means deployment
+succeeded (including the mathematically possible address word `0`); `none` means the opcode pushes
+zero. `world` is the actually committed post-world on every path, including a creator nonce bump
+that survives collision, init-code revert, or deployment failure. -/
+structure CreateResponse where
+  /-- The deployed address on success, or `none` when the opcode returns zero. -/
+  created    : Option U256
+  /-- Revert data on failure. Successful creation exposes an empty return-data buffer. -/
+  returndata : List UInt8
+  /-- The committed post-world, including effects that survive failed deployment. -/
+  world      : CallWorld
+
+/-- Open-world interpretation of contract creation. The relation may summarize arbitrary init-code
+execution, including nested calls/creates and re-entrant execution of the creator. -/
+structure ExternalCreates where
+  /-- Relates a creation request and pre-state to any permitted completed response. -/
+  Create : CreateRequest → EvmState → CreateResponse → Prop
+
+namespace ExternalCreates
+
+/-- No contract creation is available. -/
+def none : ExternalCreates where Create := fun _ _ _ => False
+
+/-- Every completed creation response is permitted. -/
+def any : ExternalCreates where Create := fun _ _ _ => True
+
+end ExternalCreates
+
 /-- Install the mutable world projection produced by a successful external call. Immutable frame
 context (address/caller/calldata/block fields), caller memory, returndata, and halt status are
 preserved here and handled separately by `finishCall`. -/
@@ -353,7 +430,10 @@ def CallWorld.install (world : CallWorld) (st : EvmState) : EvmState :=
       selfBalance := world.selfBalance
       balanceOf := world.balanceOf
       extCodeOf := world.extCodeOf
-      extCodeHashOf := world.extCodeHashOf } }
+      extCodeHashOf := world.extCodeHashOf
+      nonceOf := world.nonceOf
+      storageOf := world.storageOf
+      transientOf := world.transientOf } }
 
 /-- The current mutable world projection, useful when an external execution leaves it unchanged. -/
 def CallWorld.ofState (st : EvmState) : CallWorld :=
@@ -361,6 +441,9 @@ def CallWorld.ofState (st : EvmState) : CallWorld :=
     balanceOf := st.env.balanceOf
     extCodeOf := st.env.extCodeOf
     extCodeHashOf := st.env.extCodeHashOf
+    nonceOf := st.env.nonceOf
+    storageOf := st.env.storageOf
+    transientOf := st.env.transientOf
     storage := st.storage
     transient := st.transient
     logs := [] }
@@ -388,6 +471,31 @@ def finishCall (kind : CallKind) (st : EvmState) (response : CallResponse)
 
 /-- EVM word returned by the call-family built-ins. -/
 def CallResponse.flag (response : CallResponse) : U256 := if response.success then 1 else 0
+
+/-- The word pushed by CREATE/CREATE2. -/
+def CreateResponse.result (response : CreateResponse) : U256 := response.created.getD 0
+
+/-- CREATE exposes revert bytes on failure and clears returndata on success. -/
+def CreateResponse.visibleReturnData (response : CreateResponse) : List UInt8 :=
+  if response.created.isSome then [] else response.returndata
+
+/-- Complete a creation attempt after the external relation supplies its response. Reading init
+code expands caller memory. The response world is always the committed post-world because the
+creator nonce can advance even when deployment returns zero. -/
+def finishCreate (st : EvmState) (response : CreateResponse) (offset size : Nat) : EvmState :=
+  { response.world.install (touchMemory st offset size) with
+    returndata := response.visibleReturnData }
+
+@[simp] theorem finishCreate_returndata (st response offset size) :
+    (finishCreate st response offset size).returndata = response.visibleReturnData := rfl
+
+@[simp] theorem finishCreate_storage (st response offset size key) :
+    (finishCreate st response offset size).storage key = response.world.storage key := by
+  simp [finishCreate, CallWorld.install]
+
+@[simp] theorem finishCreate_nonce (st response offset size address) :
+    (finishCreate st response offset size).env.nonceOf address = response.world.nonceOf address := by
+  simp [finishCreate, CallWorld.install]
 
 @[simp] theorem finishCall_returndata (kind st response inputOffset inputSize outputOffset
     outputSize) :
@@ -535,9 +643,17 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
   | .msize      => rd0 (memorySize st) args st
   -- storage
   | .sload      => match args with | [k]    => some (.ok [st.storage k] st) | _ => none
-  | .sstore     => match args with | [k, v] => some (.ok [] { st with storage := upd st.storage k v }) | _ => none
+  | .sstore     => match args with
+      | [k, v] => some (.ok [] { st with
+          storage := upd st.storage k v
+          env := { st.env with storageOf := updAccount st.env.storageOf st.env.address k v } })
+      | _ => none
   | .tload      => match args with | [k]    => some (.ok [st.transient k] st) | _ => none
-  | .tstore     => match args with | [k, v] => some (.ok [] { st with transient := upd st.transient k v }) | _ => none
+  | .tstore     => match args with
+      | [k, v] => some (.ok [] { st with
+          transient := upd st.transient k v
+          env := { st.env with transientOf := updAccount st.env.transientOf st.env.address k v } })
+      | _ => none
   -- calldata / code / returndata
   | .calldataload   => rd1 (fun p => wordFrom st.env.calldata p.toNat) args st
   | .calldatasize   => rd0 (BitVec.ofNat 256 st.env.calldata.length) args st
@@ -630,32 +746,57 @@ def externalCall (external : ExternalCalls) (kind : CallKind) (gas target value 
       (finishCall kind st response inputOffset.toNat inputSize.toNat
         outputOffset.toNat outputSize.toNat)
 
-/-- Open-world built-in relation. Local operations retain the executable `stepOp` graph; the four
-call-family operations are interpreted by `external`. -/
-def builtin (external : ExternalCalls) (op : Op) (args : List U256) (st : EvmState)
+/-- Relational execution of CREATE/CREATE2 after arity checking. The external relation executes the
+copied init code; `finishCreate` fixes memory expansion, the returned word, returndata, and the
+committed caller-observable world. -/
+def externalCreate (external : ExternalCreates) (kind : CreateKind) (value offset size : U256)
+    (salt : Option U256) (st : EvmState) (result : BuiltinResult U256 EvmState) : Prop :=
+  ∃ response,
+    external.Create
+      { kind, value, initCode := readBytes st.memory offset.toNat size.toNat, salt }
+      st response ∧
+    result = .ok [response.result] (finishCreate st response offset.toNat size.toNat)
+
+/-- Combined open-world built-in relation. Local operations retain the executable `stepOp` graph;
+CALL-family and CREATE-family operations are interpreted by their respective relations. -/
+def builtinWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
+    (op : Op) (args : List U256) (st : EvmState)
     (result : BuiltinResult U256 EvmState) : Prop :=
   match op with
   | .call => match args with
       | [gas, target, value, inputOffset, inputSize, outputOffset, outputSize] =>
-          externalCall external .call gas target value inputOffset inputSize outputOffset
+          externalCall calls .call gas target value inputOffset inputSize outputOffset
             outputSize st result
       | _ => False
   | .callcode => match args with
       | [gas, target, value, inputOffset, inputSize, outputOffset, outputSize] =>
-          externalCall external .callcode gas target value inputOffset inputSize outputOffset
+          externalCall calls .callcode gas target value inputOffset inputSize outputOffset
             outputSize st result
       | _ => False
   | .delegatecall => match args with
       | [gas, target, inputOffset, inputSize, outputOffset, outputSize] =>
-          externalCall external .delegatecall gas target st.env.callvalue inputOffset inputSize
+          externalCall calls .delegatecall gas target st.env.callvalue inputOffset inputSize
             outputOffset outputSize st result
       | _ => False
   | .staticcall => match args with
       | [gas, target, inputOffset, inputSize, outputOffset, outputSize] =>
-          externalCall external .staticcall gas target 0 inputOffset inputSize outputOffset
+          externalCall calls .staticcall gas target 0 inputOffset inputSize outputOffset
             outputSize st result
       | _ => False
+  | .create => match args with
+      | [value, offset, size] =>
+          externalCreate creates .create value offset size none st result
+      | _ => False
+  | .create2 => match args with
+      | [value, offset, size, salt] =>
+          externalCreate creates .create2 value offset size (some salt) st result
+      | _ => False
   | _ => stepOp op args st = some result
+
+/-- Backwards-compatible call-only built-in relation. -/
+def builtin (external : ExternalCalls) :
+    Op → List U256 → EvmState → BuiltinResult U256 EvmState → Prop :=
+  builtinWithExternal external ExternalCreates.none
 
 /-- Effect classification of each built-in (total on the finite `Op` enum). The flags
 over-approximate (see `Effects`); unmodeled external ops get the conservative `top`. -/
@@ -684,11 +825,11 @@ def effects : Op → Effects
   -- returndata bounds failure is an exceptional halt
   | .returndatacopy =>
       { deterministic := true, reads := true, writes := true, halts := true }
-  -- calls return normally to the caller but otherwise have every effect
-  | .call | .callcode | .delegatecall | .staticcall =>
+  -- calls and creates return normally to the caller but otherwise have every effect
+  | .call | .callcode | .delegatecall | .staticcall | .create | .create2 =>
       { deterministic := false, reads := true, writes := true, halts := false }
   -- remaining external interaction: conservative
-  | .gas | .create | .create2 | .selfdestruct => Effects.top
+  | .gas | .selfdestruct => Effects.top
   -- halting
   | .stop | .invalid =>
       { deterministic := true, reads := false, writes := true, halts := true }
@@ -788,17 +929,20 @@ to the concrete `Value := BitVec 256` / `State := EvmState`. -/
   Builtin  := fun op args st r => stepOp op args st = some r
   effects  := effects
 
-/-- The gas-free EVM reference dialect with open-world call behavior supplied by `external`.
-Unlike `evm`, this dialect may be nondeterministic and therefore has no canonical executable
-interpreter. -/
-@[reducible] def evmWithCalls (external : ExternalCalls) : Dialect where
+/-- The gas-free EVM reference dialect with open-world call and creation behavior. Unlike `evm`,
+this dialect may be nondeterministic and therefore has no canonical executable interpreter. -/
+@[reducible] def evmWithExternal (calls : ExternalCalls) (creates : ExternalCreates) : Dialect where
   Op       := Op
   Value    := U256
   State    := EvmState
   litValue := litValue
   litWF    := litWF
-  Builtin  := builtin external
+  Builtin  := builtinWithExternal calls creates
   effects  := effects
+
+/-- Backwards-compatible call-only open-world dialect. -/
+@[reducible] def evmWithCalls (external : ExternalCalls) : Dialect :=
+  evmWithExternal external ExternalCreates.none
 
 /-- The EVM dialect as an `ExecDialect`: `Builtin` is defined from `stepOp`, so the executable
 `builtinFn := stepOp` agrees with it by construction. `@[reducible]` for the same reason as `evm`. -/
@@ -832,11 +976,11 @@ theorem effects_sound : evm.EffectsSound := by
         _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, _ | ⟨e, _ | ⟨f, _ | ⟨g, args⟩⟩⟩⟩⟩⟩⟩ <;>
         simp_all [stepOp, un, bin, ter, rd0, rd1] <;> subst r <;> rfl
 
-/-- The effect classification remains sound for every external-call relation. Calls carry no
-determinism or non-writing promise, and their non-halting promise follows from `externalCall`
-always producing `BuiltinResult.ok`. -/
-theorem effects_sound_withCalls (external : ExternalCalls) :
-    (evmWithCalls external).EffectsSound := by
+/-- The effect classification remains sound for every external call/create relation. External
+operations carry no determinism or non-writing promise, and their non-halting promise follows from
+the boundary relations always producing `BuiltinResult.ok`. -/
+theorem effects_sound_withExternal (calls : ExternalCalls) (creates : ExternalCreates) :
+    (evmWithExternal calls creates).EffectsSound := by
   refine ⟨?_, ?_, ?_⟩
   · intro op hd
     have hlocal := effects_sound.det op hd
@@ -844,23 +988,29 @@ theorem effects_sound_withCalls (external : ExternalCalls) :
     all_goals
       intro args st r₁ r₂ h₁ h₂
       apply hlocal args st r₁ r₂
-      · simpa [evmWithCalls, builtin] using h₁
-      · simpa [evmWithCalls, builtin] using h₂
+      · simpa [evmWithExternal, builtinWithExternal] using h₁
+      · simpa [evmWithExternal, builtinWithExternal] using h₂
   · intro op hw
     have hlocal := effects_sound.write op hw
     cases op <;> simp [effects] at hw
     all_goals
       intro args st r h
       apply hlocal args st r
-      simpa [evmWithCalls, builtin] using h
+      simpa [evmWithExternal, builtinWithExternal] using h
   · intro op hh
     cases op <;> simp [effects, Effects.top] at hh
     all_goals
       intro args st r hb
       rcases args with
         _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, _ | ⟨e, _ | ⟨f, _ | ⟨g, _ | ⟨h, args⟩⟩⟩⟩⟩⟩⟩⟩ <;>
-        simp_all [evmWithCalls, builtin, externalCall, stepOp, un, bin, ter, rd0, rd1]
+        simp_all [evmWithExternal, builtinWithExternal, externalCall, externalCreate, stepOp,
+          un, bin, ter, rd0, rd1]
       all_goals try { rcases hb with ⟨response, _, rfl⟩; rfl }
+
+/-- Compatibility specialization for call-only clients. -/
+theorem effects_sound_withCalls (external : ExternalCalls) :
+    (evmWithCalls external).EffectsSound :=
+  effects_sound_withExternal external ExternalCreates.none
 
 /-! ### Smoke tests — structural dispatch reduces cleanly (no `maxRecDepth` gymnastics). -/
 
@@ -902,5 +1052,33 @@ example (external : ExternalCalls) (st : EvmState) (response : CallResponse)
     (evmWithCalls external).Builtin .call [1, 2, 3, 0, 0, 0, 0] st
       (.ok [response.flag] (finishCall .call st response 0 0 0 0)) := by
   exact ⟨response, hresponse, rfl⟩
+
+/-! Open-world creation guards. -/
+
+example (response : CreateResponse) (address : U256)
+    (h : response.created = some address) : response.result = address := by
+  simp [CreateResponse.result, h]
+
+example (response : CreateResponse)
+    (h : response.created = none) : response.result = 0 := by
+  simp [CreateResponse.result, h]
+
+example (st : EvmState) (response : CreateResponse) (address : U256)
+    (h : response.created = some address) :
+    (finishCreate st response 0 0).returndata = [] := by
+  simp [CreateResponse.visibleReturnData, h]
+
+example (creates : ExternalCreates) (st : EvmState) (response : CreateResponse)
+    (hresponse : creates.Create
+      { kind := .create2, value := 7, initCode := [], salt := some 11 } st response) :
+    (evmWithExternal ExternalCalls.none creates).Builtin .create2 [7, 0, 0, 11] st
+      (.ok [response.result] (finishCreate st response 0 0)) := by
+  exact ⟨response, hresponse, rfl⟩
+
+/-- Local writes update both the executing-account view and the global world projection. -/
+example (st : EvmState) (key value : U256) :
+    ∃ st', stepOp .sstore [key, value] st = some (.ok [] st') ∧
+      st'.storage key = value ∧ st'.env.storageOf st.env.address key = value := by
+  refine ⟨_, rfl, ?_, ?_⟩ <;> simp [upd, updAccount]
 
 end YulSemantics.EVM
