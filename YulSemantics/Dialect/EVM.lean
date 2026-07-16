@@ -100,9 +100,14 @@ inductive Op
   | stop | ret | revert | invalid
   deriving Repr, DecidableEq, Inhabited
 
-/-- How a halting built-in terminated, stored in the machine state. -/
+/-- How a halting built-in terminated, stored in the machine state.
+
+`staticViolation` is the exceptional halt of a state-modifying built-in attempted in a static frame
+(`env.static = true`). It is kept distinct from `invalid` (the `INVALID` opcode) because the EVM
+raises a dedicated `StaticModeViolation` exception for it; conflating the two would make a Yul→EVM
+compiler unable to match the exact exception on this path. -/
 inductive HaltKind
-  | stop | ret | revert | invalid | invalidMemoryAccess | selfdestruct
+  | stop | ret | revert | invalid | invalidMemoryAccess | selfdestruct | staticViolation
   deriving Repr, DecidableEq, Inhabited
 
 /-- One emitted log record, including the emitting account. Keeping the
@@ -252,7 +257,7 @@ rollback at the boundary, keeping the `Step` judgment (which is shared with sub-
 as opposed to discarding them (`revert`/`invalid`/`invalidMemoryAccess`). -/
 def HaltKind.commits : HaltKind → Bool
   | .stop | .ret | .selfdestruct => true
-  | .revert | .invalid | .invalidMemoryAccess => false
+  | .revert | .invalid | .invalidMemoryAccess | .staticViolation => false
 
 /-- The frame's *observable* state at its boundary, given its initial state `st0` and its final
 `Step` state `st'`.
@@ -740,12 +745,12 @@ def signExtend (i x : U256) : U256 :=
     if x.getLsbD (bits - 1) then x ||| (~~~low) else x &&& low
 
 /-- Guard a state-modifying local built-in by the static-call context. In a static frame
-(`st.env.static = true`) the operation halts exceptionally with `.invalid`, matching the EVM's
-write protection; otherwise it produces `act`. Used for `sstore`/`tstore`/`log0`–`log4`/
-`selfdestruct`. -/
+(`st.env.static = true`) the operation halts exceptionally with `.staticViolation`, matching the
+EVM's write protection (`StaticModeViolation`); otherwise it produces `act`. Used for
+`sstore`/`tstore`/`log0`–`log4`/`selfdestruct`. -/
 @[inline] def guardStatic (st : EvmState) (act : BuiltinResult U256 EvmState) :
     Option (BuiltinResult U256 EvmState) :=
-  some (if st.env.static then .halt { st with halted := some (.invalid, []) } else act)
+  some (if st.env.static then .halt { st with halted := some (.staticViolation, []) } else act)
 
 /-- The executable built-in step function. Returns `none` on an arity mismatch or an unmodeled
 built-in. Call- and create-family operations are deliberately absent from this function; use the
@@ -935,7 +940,7 @@ def builtinWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
       | [gas, target, value, inputOffset, inputSize, outputOffset, outputSize] =>
           -- A value-bearing `call` is a state modification, forbidden in a static frame.
           if st.env.static ∧ value ≠ 0 then
-            result = .halt { st with halted := some (.invalid, []) }
+            result = .halt { st with halted := some (.staticViolation, []) }
           else
             externalCall calls .call gas target value inputOffset inputSize outputOffset
               outputSize st result
@@ -943,7 +948,7 @@ def builtinWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
   | .callcode => match args with
       | [gas, target, value, inputOffset, inputSize, outputOffset, outputSize] =>
           if st.env.static ∧ value ≠ 0 then
-            result = .halt { st with halted := some (.invalid, []) }
+            result = .halt { st with halted := some (.staticViolation, []) }
           else
             externalCall calls .callcode gas target value inputOffset inputSize outputOffset
               outputSize st result
@@ -961,12 +966,12 @@ def builtinWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
   | .create => match args with
       | [value, offset, size] =>
           -- Contract creation is forbidden in a static frame.
-          if st.env.static then result = .halt { st with halted := some (.invalid, []) }
+          if st.env.static then result = .halt { st with halted := some (.staticViolation, []) }
           else externalCreate creates .create value offset size none st result
       | _ => False
   | .create2 => match args with
       | [value, offset, size, salt] =>
-          if st.env.static then result = .halt { st with halted := some (.invalid, []) }
+          if st.env.static then result = .halt { st with halted := some (.staticViolation, []) }
           else externalCreate creates .create2 value offset size (some salt) st result
       | _ => False
   -- `gas()` is a nondeterministic oracle read: it returns an arbitrary remaining-gas word and
@@ -1397,40 +1402,40 @@ example (st : EvmState) (key value : U256) (hstatic : st.env.static = false) :
   · simp [updAccount]
 
 /-! Static-call write-protection guards. In a static frame the state-modifying built-ins halt
-exceptionally with `.invalid`; the same ops write normally in an ordinary frame. -/
+exceptionally with `.staticViolation`; the same ops write normally in an ordinary frame. -/
 
-/-- A static frame's `sstore` halts exceptionally with `.invalid` and does not write. -/
+/-- A static frame's `sstore` halts exceptionally with `.staticViolation` and does not write. -/
 example (st : EvmState) (key value : U256) (hstatic : st.env.static = true) :
-    stepOp .sstore [key, value] st = some (.halt { st with halted := some (.invalid, []) }) := by
+    stepOp .sstore [key, value] st = some (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [stepOp, guardStatic, hstatic]
 
 /-- A static frame's `tstore` likewise halts exceptionally. -/
 example (st : EvmState) (key value : U256) (hstatic : st.env.static = true) :
-    stepOp .tstore [key, value] st = some (.halt { st with halted := some (.invalid, []) }) := by
+    stepOp .tstore [key, value] st = some (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [stepOp, guardStatic, hstatic]
 
 /-- A static frame's `log0` halts exceptionally. -/
 example (st : EvmState) (p n : U256) (hstatic : st.env.static = true) :
-    stepOp .log0 [p, n] st = some (.halt { st with halted := some (.invalid, []) }) := by
+    stepOp .log0 [p, n] st = some (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [stepOp, guardStatic, hstatic]
 
 /-- A static frame's `selfdestruct` halts exceptionally (no balance transfer). -/
 example (st : EvmState) (b : U256) (hstatic : st.env.static = true) :
-    stepOp .selfdestruct [b] st = some (.halt { st with halted := some (.invalid, []) }) := by
+    stepOp .selfdestruct [b] st = some (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [stepOp, guardStatic, hstatic]
 
 /-- A static frame's value-bearing `call` halts exceptionally under `builtinWithExternal`. -/
 example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState)
     (hstatic : st.env.static = true) :
     builtinWithExternal calls creates .call [0, 0, 1, 0, 0, 0, 0] st
-      (.halt { st with halted := some (.invalid, []) }) := by
+      (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [builtinWithExternal, hstatic]
 
 /-- A static frame's `create` halts exceptionally under `builtinWithExternal`. -/
 example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState)
     (hstatic : st.env.static = true) :
     builtinWithExternal calls creates .create [0, 0, 0] st
-      (.halt { st with halted := some (.invalid, []) }) := by
+      (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [builtinWithExternal, hstatic]
 
 /-- A zero-value `call` is still permitted in a static frame (delegates to the external relation). -/
