@@ -164,7 +164,8 @@ The `Dialect` classifies each built-in by effect — whether it is *deterministi
 *writes* state, and/or *halts*. This classification is what makes optimization proofs sound
 (CSE/DCE/reordering may only move or drop calls with the right effects). The EVM dialect proves that
 these flags soundly over-approximate `stepOp`: deterministic operations have at most one result,
-non-writing operations preserve the entire state, and non-halting operations only return normally
+non-writing operations preserve the entire state, non-halting operations only return normally, and
+non-reading (`reads = false`) operations return values fixed by their arguments alone
 (`EVM.effects_sound`; `EVM.effects_sound_withExternal` for the open-world dialect).
 
 Because static-call write protection (see below) lets the state-modifying built-ins halt when the
@@ -173,8 +174,10 @@ the whole call/create family carry `halts := true`. This is a faithful over-appr
 slightly weakens the non-halting guarantee for these writers — a deliberate tradeoff of modeling
 static context.
 
-(The `reads` flag is documented but its soundness is not yet machine-checked — see "What is not done,
-and why".)
+(The `reads` flag's soundness is machine-checked too: `EffectsSound.read` maps `reads = false` to
+`Dialect.NonReading` — the built-in's returned values depend only on its arguments, not on the state.
+This is why a blind writer like `mstore`/`sstore` is correctly `reads = false` even though it mutates
+state: it returns no values.)
 
 ## EVM dialect: external calls and contract creation
 
@@ -329,10 +332,6 @@ calls/creations are outside the determinism and adequacy guarantees.
   the judgment. That machinery belongs with function-level optimizations (inlining) and is deferred.
   Relatedly, block congruence carries a `hoist`-agreement side condition (`rfl` for rewrites that do
   not touch top-level `funDef` statements).
-- **`reads`-flag soundness.** `EffectsSound` proves the `deterministic`/`writes`/`halts` clauses; a
-  machine-checked soundness for `reads` (result independent of the unread part of the state) needs a
-  notion of state observation / read footprint, and is deferred. The flag is documented and currently
-  unused by any proof.
 - **Account-map consistency.** The abstract world maps (`balanceOf`/`nonceOf`/`extCodeOf`/
   `extCodeHashOf`/`storageOf`) are independent; the intended cross-map invariants (e.g. `extcodehash`
   = keccak of code for non-empty accounts, zero for empty ones) are captured by an optional

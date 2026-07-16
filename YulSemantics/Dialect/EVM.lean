@@ -1178,9 +1178,22 @@ set_option linter.unusedSimpArgs false in
 operations marked non-writing return the input state unchanged, and operations marked non-halting
 can only produce a normal result. -/
 theorem effects_sound : evm.EffectsSound := by
-  refine ⟨?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_⟩
   · intro op _
     exact exec_lawful.deterministic op
+  · -- read: every `reads = false` op returns values fixed by its arguments. The `reads = true` ops
+    -- are discharged by `simp [effects] at hr`; the survivors are the pure ops (`rets = f args`), the
+    -- blind writers `mstore`/`mstore8`/`sstore`/`tstore` (`rets = []`; the storage writers split on
+    -- the static guard, both branches with `rets = []`), and `stop`/`invalid` (never `.ok`, vacuous).
+    intro op hr
+    cases op <;> simp [effects] at hr
+    all_goals
+      intro args st1 st2 rets1 st1' rets2 st2' h1 h2
+      change stepOp _ args st1 = some (.ok rets1 st1') at h1
+      change stepOp _ args st2 = some (.ok rets2 st2') at h2
+      rcases args with _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, args⟩⟩⟩⟩ <;>
+        simp_all [stepOp, un, bin, ter, rd0, rd1, guardStatic] <;>
+        split_ifs at h1 h2 <;> simp_all
   · intro op hw
     cases op <;> simp [effects] at hw
     all_goals
@@ -1204,7 +1217,7 @@ now marked `halts := true` to cover static-context write protection), so only th
 *local* built-ins remain to discharge; their `Builtin` is definitionally `stepOp`. -/
 theorem effects_sound_withExternal (calls : ExternalCalls) (creates : ExternalCreates) :
     (evmWithExternal calls creates).EffectsSound := by
-  refine ⟨?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_⟩
   · intro op hd
     have hlocal := effects_sound.det op hd
     cases op <;> simp [effects, Effects.top] at hd
@@ -1213,6 +1226,17 @@ theorem effects_sound_withExternal (calls : ExternalCalls) (creates : ExternalCr
       apply hlocal args st r₁ r₂
       · simpa [evmWithExternal, builtinWithExternal] using h₁
       · simpa [evmWithExternal, builtinWithExternal] using h₂
+  · -- read: none of the `reads = false` ops are external (call/create/gas all carry `reads := true`),
+    -- so each survivor's `Builtin` reduces definitionally to `stepOp` and we delegate to the local
+    -- `effects_sound.read`.
+    intro op hr
+    have hlocal := effects_sound.read op hr
+    cases op <;> simp [effects, Effects.top] at hr
+    all_goals
+      intro args st1 st2 rets1 st1' rets2 st2' h1 h2
+      apply hlocal args st1 st2 rets1 st1' rets2 st2'
+      · simpa [evmWithExternal, builtinWithExternal] using h1
+      · simpa [evmWithExternal, builtinWithExternal] using h2
   · intro op hw
     have hlocal := effects_sound.write op hw
     cases op <;> simp [effects, Effects.top] at hw
@@ -1263,6 +1287,13 @@ control flow. The general semantic guarantee is `effects_sound` above. -/
 example : (effects .msize).writes = false := rfl
 example : (effects .mload).writes = true := rfl
 example : (effects .returndatacopy).halts = true := rfl
+
+-- `reads` guards: a pure op and a blind writer are both `reads := false` and are proven
+-- non-reading by `effects_sound.read`, even though the writer mutates state (`writes := true`).
+example : (effects .add).reads = false := rfl
+example : (effects .sstore).reads = false ∧ (effects .sstore).writes = true := ⟨rfl, rfl⟩
+example : evm.NonReading .add := effects_sound.read .add rfl
+example : evm.NonReading .sstore := effects_sound.read .sstore rfl
 example : (effects .stop).writes = true := rfl
 example : effects .selfdestruct =
     { deterministic := true, reads := true, writes := true, halts := true } := rfl
