@@ -190,8 +190,10 @@ behavior. It fixes the boundary:
 
 - caller memory is copied into the request before the external execution;
 - a frame that is itself static (`ExecEnv.static`) applies EVM write protection: `sstore`, `tstore`,
-  `log0`–`log4`, `selfdestruct`, `create`/`create2`, and value-bearing `call`/`callcode` halt
-  exceptionally with `.invalid` instead of taking effect, while `staticcall`, `delegatecall`, and
+  `log0`–`log4`, `selfdestruct`, `create`/`create2`, and value-bearing `call` halt
+  exceptionally with `.staticViolation` (the EVM's `StaticModeViolation`) instead of taking effect,
+  while `callcode` (its value transfer is a self no-op, so the EVM does not reject it), `staticcall`,
+  `delegatecall`, and
   zero-value `call` remain permitted (`STATICCALL` sets this bit on the callee frame);
 - successful non-static calls commit the supplied post-world;
 - failure and `staticcall` roll back all supplied world changes;
@@ -267,7 +269,7 @@ revert with the bare revert, because they see the un-rolled-back write. Observed
 `committedState` they *are* equal: `EVM.deadStore_revert_obs_eq` proves `{ sstore(0,1); revert(0,0) }`
 and `{ revert(0,0) }` have identical committed runs from every non-static initial state. (The
 non-static condition is essential and faithful: under `STATICCALL` the `sstore` itself halts with
-`.invalid`, so the two programs genuinely differ.)
+`.staticViolation`, so the two programs genuinely differ.)
 
 ## What is proven
 

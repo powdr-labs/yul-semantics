@@ -100,9 +100,14 @@ inductive Op
   | stop | ret | revert | invalid
   deriving Repr, DecidableEq, Inhabited
 
-/-- How a halting built-in terminated, stored in the machine state. -/
+/-- How a halting built-in terminated, stored in the machine state.
+
+`staticViolation` is the exceptional halt of a state-modifying built-in attempted in a static frame
+(`env.static = true`). It is kept distinct from `invalid` (the `INVALID` opcode) because the EVM
+raises a dedicated `StaticModeViolation` exception for it; conflating the two would make a Yul→EVM
+compiler unable to match the exact exception on this path. -/
 inductive HaltKind
-  | stop | ret | revert | invalid | invalidMemoryAccess | selfdestruct
+  | stop | ret | revert | invalid | invalidMemoryAccess | selfdestruct | staticViolation
   deriving Repr, DecidableEq, Inhabited
 
 /-- One emitted log record, including the emitting account. Keeping the
@@ -141,9 +146,10 @@ structure ExecEnv where
   a transaction semantics. -/
   createdThisTx : Bool := false
   /-- Whether this frame executes under a `STATICCALL` context. When set, every state-modifying
-  built-in (`sstore`/`tstore`/`log0`–`log4`/`selfdestruct`, `create`/`create2`, and `call`/`callcode`
-  with nonzero value) halts exceptionally instead of taking effect, matching the EVM's static-call
-  write protection. Memory operations remain permitted. -/
+  built-in (`sstore`/`tstore`/`log0`–`log4`/`selfdestruct`, `create`/`create2`, and `call` with
+  nonzero value) halts exceptionally instead of taking effect, matching the EVM's static-call
+  write protection. `callcode` is *not* restricted (its value transfer is a self no-op), nor are
+  `delegatecall`/`staticcall`; memory operations remain permitted. -/
   static        : Bool := false
   /-- The current block's beneficiary address (`coinbase`). -/
   coinbase      : U256 := 0
@@ -252,7 +258,7 @@ rollback at the boundary, keeping the `Step` judgment (which is shared with sub-
 as opposed to discarding them (`revert`/`invalid`/`invalidMemoryAccess`). -/
 def HaltKind.commits : HaltKind → Bool
   | .stop | .ret | .selfdestruct => true
-  | .revert | .invalid | .invalidMemoryAccess => false
+  | .revert | .invalid | .invalidMemoryAccess | .staticViolation => false
 
 /-- The frame's *observable* state at its boundary, given its initial state `st0` and its final
 `Step` state `st'`.
@@ -740,12 +746,12 @@ def signExtend (i x : U256) : U256 :=
     if x.getLsbD (bits - 1) then x ||| (~~~low) else x &&& low
 
 /-- Guard a state-modifying local built-in by the static-call context. In a static frame
-(`st.env.static = true`) the operation halts exceptionally with `.invalid`, matching the EVM's
-write protection; otherwise it produces `act`. Used for `sstore`/`tstore`/`log0`–`log4`/
-`selfdestruct`. -/
+(`st.env.static = true`) the operation halts exceptionally with `.staticViolation`, matching the
+EVM's write protection (`StaticModeViolation`); otherwise it produces `act`. Used for
+`sstore`/`tstore`/`log0`–`log4`/`selfdestruct`. -/
 @[inline] def guardStatic (st : EvmState) (act : BuiltinResult U256 EvmState) :
     Option (BuiltinResult U256 EvmState) :=
-  some (if st.env.static then .halt { st with halted := some (.invalid, []) } else act)
+  some (if st.env.static then .halt { st with halted := some (.staticViolation, []) } else act)
 
 /-- The executable built-in step function. Returns `none` on an arity mismatch or an unmodeled
 built-in. Call- and create-family operations are deliberately absent from this function; use the
@@ -935,18 +941,19 @@ def builtinWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
       | [gas, target, value, inputOffset, inputSize, outputOffset, outputSize] =>
           -- A value-bearing `call` is a state modification, forbidden in a static frame.
           if st.env.static ∧ value ≠ 0 then
-            result = .halt { st with halted := some (.invalid, []) }
+            result = .halt { st with halted := some (.staticViolation, []) }
           else
             externalCall calls .call gas target value inputOffset inputSize outputOffset
               outputSize st result
       | _ => False
   | .callcode => match args with
       | [gas, target, value, inputOffset, inputSize, outputOffset, outputSize] =>
-          if st.env.static ∧ value ≠ 0 then
-            result = .halt { st with halted := some (.invalid, []) }
-          else
-            externalCall calls .callcode gas target value inputOffset inputSize outputOffset
-              outputSize st result
+          -- Unlike `call`, a value-bearing `callcode` is NOT rejected in a static frame: the value
+          -- is transferred from the executing account to itself (`callcode` runs the target's code
+          -- in the current account's context), a no-op on world state. Matches EIP-214 / the EVM,
+          -- which has no static-mode `callcode` gate.
+          externalCall calls .callcode gas target value inputOffset inputSize outputOffset
+            outputSize st result
       | _ => False
   | .delegatecall => match args with
       | [gas, target, inputOffset, inputSize, outputOffset, outputSize] =>
@@ -961,12 +968,12 @@ def builtinWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
   | .create => match args with
       | [value, offset, size] =>
           -- Contract creation is forbidden in a static frame.
-          if st.env.static then result = .halt { st with halted := some (.invalid, []) }
+          if st.env.static then result = .halt { st with halted := some (.staticViolation, []) }
           else externalCreate creates .create value offset size none st result
       | _ => False
   | .create2 => match args with
       | [value, offset, size, salt] =>
-          if st.env.static then result = .halt { st with halted := some (.invalid, []) }
+          if st.env.static then result = .halt { st with halted := some (.staticViolation, []) }
           else externalCreate creates .create2 value offset size (some salt) st result
       | _ => False
   -- `gas()` is a nondeterministic oracle read: it returns an arbitrary remaining-gas word and
@@ -1397,40 +1404,40 @@ example (st : EvmState) (key value : U256) (hstatic : st.env.static = false) :
   · simp [updAccount]
 
 /-! Static-call write-protection guards. In a static frame the state-modifying built-ins halt
-exceptionally with `.invalid`; the same ops write normally in an ordinary frame. -/
+exceptionally with `.staticViolation`; the same ops write normally in an ordinary frame. -/
 
-/-- A static frame's `sstore` halts exceptionally with `.invalid` and does not write. -/
+/-- A static frame's `sstore` halts exceptionally with `.staticViolation` and does not write. -/
 example (st : EvmState) (key value : U256) (hstatic : st.env.static = true) :
-    stepOp .sstore [key, value] st = some (.halt { st with halted := some (.invalid, []) }) := by
+    stepOp .sstore [key, value] st = some (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [stepOp, guardStatic, hstatic]
 
 /-- A static frame's `tstore` likewise halts exceptionally. -/
 example (st : EvmState) (key value : U256) (hstatic : st.env.static = true) :
-    stepOp .tstore [key, value] st = some (.halt { st with halted := some (.invalid, []) }) := by
+    stepOp .tstore [key, value] st = some (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [stepOp, guardStatic, hstatic]
 
 /-- A static frame's `log0` halts exceptionally. -/
 example (st : EvmState) (p n : U256) (hstatic : st.env.static = true) :
-    stepOp .log0 [p, n] st = some (.halt { st with halted := some (.invalid, []) }) := by
+    stepOp .log0 [p, n] st = some (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [stepOp, guardStatic, hstatic]
 
 /-- A static frame's `selfdestruct` halts exceptionally (no balance transfer). -/
 example (st : EvmState) (b : U256) (hstatic : st.env.static = true) :
-    stepOp .selfdestruct [b] st = some (.halt { st with halted := some (.invalid, []) }) := by
+    stepOp .selfdestruct [b] st = some (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [stepOp, guardStatic, hstatic]
 
 /-- A static frame's value-bearing `call` halts exceptionally under `builtinWithExternal`. -/
 example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState)
     (hstatic : st.env.static = true) :
     builtinWithExternal calls creates .call [0, 0, 1, 0, 0, 0, 0] st
-      (.halt { st with halted := some (.invalid, []) }) := by
+      (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [builtinWithExternal, hstatic]
 
 /-- A static frame's `create` halts exceptionally under `builtinWithExternal`. -/
 example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState)
     (hstatic : st.env.static = true) :
     builtinWithExternal calls creates .create [0, 0, 0] st
-      (.halt { st with halted := some (.invalid, []) }) := by
+      (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [builtinWithExternal, hstatic]
 
 /-- A zero-value `call` is still permitted in a static frame (delegates to the external relation). -/
@@ -1442,6 +1449,18 @@ example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState) (res
     builtinWithExternal calls creates .call [1, 2, 0, 0, 0, 0, 0] st
       (.ok [response.flag] (finishCall .call st response 0 0 0 0)) := by
   simp only [builtinWithExternal, hstatic]
+  refine ⟨response, hresponse, rfl⟩
+
+/-- A value-bearing `callcode` delegates to the external relation regardless of the static flag (its
+self-transfer is a no-op, so — unlike `call` — the EVM does not reject it in a static frame). The
+result is the same whether or not `st.env.static` holds. -/
+example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState) (response : CallResponse)
+    (hresponse : calls.Call
+      { kind := .callcode, gas := 1, target := 2, value := 3,
+        input := readBytes st.memory 0 0 } st response) :
+    builtinWithExternal calls creates .callcode [1, 2, 3, 0, 0, 0, 0] st
+      (.ok [response.flag] (finishCall .callcode st response 0 0 0 0)) := by
+  simp only [builtinWithExternal]
   refine ⟨response, hresponse, rfl⟩
 
 /-- New effect flags: the static-guarded writers now advertise possible halting. -/

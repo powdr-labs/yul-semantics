@@ -13,7 +13,8 @@ rollback is applied here, at the *observation* boundary.
 
 `EVM.committedState st0 st'` (see `YulSemantics.Dialect.EVM`) is that boundary map: it commits `st'`
 on a normal/`stop`/`return`/`selfdestruct` halt and rolls everything back to `st0` (keeping only the
-outcome marker and exposed return data) on a `revert`/`invalid`/`invalidMemoryAccess` halt. This
+outcome marker and exposed return data) on a `revert`/`invalid`/`invalidMemoryAccess`/
+`staticViolation` halt. This
 file lifts it to whole-program runs (`RunCommitted`) and proves the payoff the raw exact-state
 semantics cannot: a **dead store before a revert is observationally invisible**.
 
@@ -117,8 +118,8 @@ full `Step` state) cannot prove this, because they see the un-rolled-back storag
 relationally via whole-program determinism (`EVM.run_det`), quantified over all non-static `st0`.
 
 The `st0.env.static = false` hypothesis is essential and faithful: under a `STATICCALL` context the
-two programs genuinely differ — `sstore` itself halts with `.invalid` (exceptional), so the
-dead-store program observes an `.invalid` halt while the bare revert observes `.revert`. -/
+two programs genuinely differ — `sstore` itself halts with `.staticViolation` (exceptional), so the
+dead-store program observes a `.staticViolation` halt while the bare revert observes `.revert`. -/
 theorem deadStore_revert_obs_eq (st0 : EvmState) (hstatic : st0.env.static = false)
     (V' : VEnv EVM.evm) (stObs : EvmState) (o : Outcome) :
     RunCommitted deadStoreRevert st0 V' stObs o ↔ RunCommitted bareRevert st0 V' stObs o := by
