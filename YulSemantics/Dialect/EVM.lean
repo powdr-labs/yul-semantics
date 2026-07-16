@@ -146,9 +146,10 @@ structure ExecEnv where
   a transaction semantics. -/
   createdThisTx : Bool := false
   /-- Whether this frame executes under a `STATICCALL` context. When set, every state-modifying
-  built-in (`sstore`/`tstore`/`log0`–`log4`/`selfdestruct`, `create`/`create2`, and `call`/`callcode`
-  with nonzero value) halts exceptionally instead of taking effect, matching the EVM's static-call
-  write protection. Memory operations remain permitted. -/
+  built-in (`sstore`/`tstore`/`log0`–`log4`/`selfdestruct`, `create`/`create2`, and `call` with
+  nonzero value) halts exceptionally instead of taking effect, matching the EVM's static-call
+  write protection. `callcode` is *not* restricted (its value transfer is a self no-op), nor are
+  `delegatecall`/`staticcall`; memory operations remain permitted. -/
   static        : Bool := false
   /-- The current block's beneficiary address (`coinbase`). -/
   coinbase      : U256 := 0
@@ -947,11 +948,12 @@ def builtinWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
       | _ => False
   | .callcode => match args with
       | [gas, target, value, inputOffset, inputSize, outputOffset, outputSize] =>
-          if st.env.static ∧ value ≠ 0 then
-            result = .halt { st with halted := some (.staticViolation, []) }
-          else
-            externalCall calls .callcode gas target value inputOffset inputSize outputOffset
-              outputSize st result
+          -- Unlike `call`, a value-bearing `callcode` is NOT rejected in a static frame: the value
+          -- is transferred from the executing account to itself (`callcode` runs the target's code
+          -- in the current account's context), a no-op on world state. Matches EIP-214 / the EVM,
+          -- which has no static-mode `callcode` gate.
+          externalCall calls .callcode gas target value inputOffset inputSize outputOffset
+            outputSize st result
       | _ => False
   | .delegatecall => match args with
       | [gas, target, inputOffset, inputSize, outputOffset, outputSize] =>
@@ -1447,6 +1449,18 @@ example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState) (res
     builtinWithExternal calls creates .call [1, 2, 0, 0, 0, 0, 0] st
       (.ok [response.flag] (finishCall .call st response 0 0 0 0)) := by
   simp only [builtinWithExternal, hstatic]
+  refine ⟨response, hresponse, rfl⟩
+
+/-- A value-bearing `callcode` delegates to the external relation regardless of the static flag (its
+self-transfer is a no-op, so — unlike `call` — the EVM does not reject it in a static frame). The
+result is the same whether or not `st.env.static` holds. -/
+example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState) (response : CallResponse)
+    (hresponse : calls.Call
+      { kind := .callcode, gas := 1, target := 2, value := 3,
+        input := readBytes st.memory 0 0 } st response) :
+    builtinWithExternal calls creates .callcode [1, 2, 3, 0, 0, 0, 0] st
+      (.ok [response.flag] (finishCall .callcode st response 0 0 0 0)) := by
+  simp only [builtinWithExternal]
   refine ⟨response, hresponse, rfl⟩
 
 /-- New effect flags: the static-guarded writers now advertise possible halting. -/

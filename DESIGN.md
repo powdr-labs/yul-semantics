@@ -190,9 +190,10 @@ behavior. It fixes the boundary:
 
 - caller memory is copied into the request before the external execution;
 - a frame that is itself static (`ExecEnv.static`) applies EVM write protection: `sstore`, `tstore`,
-  `log0`–`log4`, `selfdestruct`, `create`/`create2`, and value-bearing `call`/`callcode` halt
+  `log0`–`log4`, `selfdestruct`, `create`/`create2`, and value-bearing `call` halt
   exceptionally with `.staticViolation` (the EVM's `StaticModeViolation`) instead of taking effect,
-  while `staticcall`, `delegatecall`, and
+  while `callcode` (its value transfer is a self no-op, so the EVM does not reject it), `staticcall`,
+  `delegatecall`, and
   zero-value `call` remain permitted (`STATICCALL` sets this bit on the callee frame);
 - successful non-static calls commit the supplied post-world;
 - failure and `staticcall` roll back all supplied world changes;
