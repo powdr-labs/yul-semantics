@@ -61,28 +61,22 @@ implies the built-in never changes the state).
 structure Effects where
   /-- Same arguments and state always yield the same result. -/
   deterministic : Bool
-  /-- The built-in **observes** the prior machine state.
+  /-- The built-in's **returned values** may depend on the prior machine state.
 
-  Precise intended meaning: `reads = false` promises that the built-in does *not consult* the current
-  state contents in deciding its behavior — both its return values and the *delta* it applies to the
-  state are a function of its arguments alone. Crucially this is orthogonal to `writes`: a blind
-  overwrite such as `mstore(p, v)`/`sstore(k, v)` is non-reading (`reads = false`) even though it is
-  writing (`writes = true`), because the bytes it stores and where it stores them are determined by
-  the arguments, not by what the state previously held. Conversely `mload`, `keccak256`, `sload`, and
-  the `*copy` family are reading: their result or the data they move depends on the current state.
-  `reads = true` is the conservative over-approximation ("may observe state").
+  Precise meaning (the one discharged by `Dialect.EffectsSound.read` via `Dialect.NonReading`):
+  `reads = false` promises that the built-in's **return values** are a function of its arguments
+  alone — running it from two different states (whenever both return normally) yields the *same*
+  returned values. This constrains only the *returned values*, **not** the new state component: a
+  blind overwrite such as `mstore(p, v)`/`sstore(k, v)` returns no values (`rets = []`, trivially
+  argument-determined) and is therefore correctly `reads = false` even though it mutates the state
+  (`writes = true`) — the value it stores comes from its arguments, and it produces nothing that
+  could depend on the prior contents. Conversely `mload`, `keccak256`, `sload`, and the `*copy`
+  family are reading: the values they return (or, for the copies, the state delta observable through
+  those returns) depend on the current state, so they are `reads = true`. `reads = true` is the
+  conservative over-approximation ("the returned values may observe state").
 
-  This is what optimizations need in order to move a non-reading write across an unrelated read, or
-  to rule out a read-after-write dependency between two calls.
-
-  **Why this flag is currently unproven** (unlike `deterministic`/`writes`/`halts`, which
-  `Dialect.EffectsSound` turns into machine-checked guarantees): stating `reads = false` formally
-  requires a *notion of state observation* — a way to say two states "agree on the part this built-in
-  could look at" (a read footprint / framing relation) and then that the built-in's result and delta
-  are invariant under changing the rest. This repo does not yet have that framing apparatus, so a
-  `NonReading` predicate and a corresponding `EffectsSound` field are left as future work rather than
-  asserted. The `reads` assignments in a concrete dialect are therefore *documented, audited-for-
-  consistency* over-approximations, not yet formally discharged. -/
+  This is what optimizations need in order to reason that a non-reading built-in's result cannot
+  witness a preceding write, ruling out a read-after-write dependency between two calls. -/
   reads  : Bool
   /-- The built-in may change the machine state. -/
   writes : Bool
@@ -145,20 +139,27 @@ def NonWriting (op : D.Op) : Prop :=
 def NonHalting (op : D.Op) : Prop :=
   ∀ args st r, D.Builtin op args st r → r.isHalt = false
 
+/-- The built-in `op` is *non-reading*: its **returned values** are a function of its arguments
+alone, independent of the machine state. Formally, whenever `op` on `args` returns normally (`.ok`)
+from two states `st1` and `st2`, the two returned value lists agree. This says nothing about the new
+state component, which is why a *blind writer* such as `mstore`/`sstore` (returning `[]`) is
+non-reading even though it mutates the state. This is the precise content of `Effects.reads = false`;
+see that field's doc. -/
+def NonReading (op : D.Op) : Prop :=
+  ∀ args st1 st2 rets1 st1' rets2 st2',
+    D.Builtin op args st1 (.ok rets1 st1') → D.Builtin op args st2 (.ok rets2 st2') → rets1 = rets2
+
 /-- Soundness of the effect classification: each `false` flag is an actual guarantee about
 `Builtin`. Concrete dialects are expected to prove this; generic optimization lemmas take it as a
 hypothesis. Because `Op` is a finite enum for concrete dialects, this is provable by case analysis.
-The EVM instance proves it as `EVM.effects_sound`.
-
-There is deliberately **no `read` field here**: a `reads = false` guarantee (the built-in does not
-observe the prior state; see `Effects.reads`) needs a notion of state observation — a read-footprint /
-framing relation stating that the result and the state delta are invariant under changes to the part
-of the state the built-in cannot see. That apparatus does not exist in this development yet, so
-`reads` remains a documented, audited over-approximation rather than a machine-checked guarantee, and
-adding a `Dialect.NonReading` predicate plus a `read` field to this structure is tracked as future
-work. The other three flags are discharged below. -/
+The EVM instance proves it as `EVM.effects_sound`. -/
 structure EffectsSound : Prop where
   det   : ∀ op, (D.effects op).deterministic = true → D.Deterministic op
+  /-- A `reads = false` built-in is *non-reading*: its returned values are a function of its
+  arguments alone and do not observe the machine state (see `Dialect.NonReading` and the
+  `Effects.reads` field doc). Note this constrains only the returned values, not the state delta, so
+  blind writers (`mstore`/`sstore`) satisfy it. -/
+  read  : ∀ op, (D.effects op).reads = false → D.NonReading op
   write : ∀ op, (D.effects op).writes = false → D.NonWriting op
   halt  : ∀ op, (D.effects op).halts = false → D.NonHalting op
 
