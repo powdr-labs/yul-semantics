@@ -1,3 +1,4 @@
+import Mathlib.Data.Nat.Basic
 import YulSemantics.BigStep
 import YulSemantics.Interp
 import YulSemantics.Dialect.EVM

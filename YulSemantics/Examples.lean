@@ -18,7 +18,7 @@ open YulSemantics EVM
 
 /-- The empty program runs to a normal outcome, leaving the state and (empty) environment. -/
 example : Run evm [] EvmState.init [] EvmState.init .normal :=
-  Step.block Step.seqNil
+  Step.block (D := evm) Step.seqNil
 
 /-- `{ stop() }` halts. (Exercises the halt-propagation path through `exprStmt`/built-in.) -/
 example : ∃ V' st' o, Run evm [Stmt.exprStmt (Expr.builtin .stop [])] EvmState.init V' st' o :=

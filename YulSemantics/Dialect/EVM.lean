@@ -1,4 +1,4 @@
-import Mathlib
+import Mathlib.Tactic.SplitIfs
 import YulSemantics.Dialect.EVMExec
 
 /-!
@@ -9,6 +9,14 @@ lawfulness, `@[simp]` state-helper lemmas, and worked examples). The Mathlib-fre
 interpreter (`Op`, `stepOp`, the `evm` dialect instance, all state defs) lives in
 `YulSemantics.Dialect.EVMExec`; this module imports it and adds the proofs, keeping Mathlib off
 the import path of code that only needs to *run* the dialect.
+
+## Imports
+
+This module deliberately does **not** `import Mathlib`. Every Lean module's `initialize_*`
+function calls the initializer of each module it imports, and that is a genuine symbol
+reference the linker cannot discard — so a single bare `import Mathlib` anywhere in a
+downstream executable's import closure keeps all ~8200 Mathlib object files alive at link
+time. The only Mathlib entry point this file actually needs is the `split_ifs` tactic.
 -/
 
 namespace YulSemantics.EVM
@@ -130,7 +138,6 @@ theorem effects_sound : evm.EffectsSound := by
         _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, _ | ⟨e, _ | ⟨f, _ | ⟨g, args⟩⟩⟩⟩⟩⟩⟩ <;>
         simp_all [stepOp, un, bin, ter, rd0, rd1] <;> subst r <;> rfl
 
-set_option linter.unnecessarySeqFocus false in
 /-- The effect classification remains sound for every external call/create relation. External
 operations carry no determinism, non-writing, or non-halting promise (the call/create family is
 now marked `halts := true` to cover static-context write protection), so only the non-halting
@@ -218,7 +225,7 @@ example :
     let st := finishSelfdestruct (selfdestructTestState false) 0x20
     (st.env.selfBalance, st.env.balanceOf 0x10, st.env.balanceOf 0x20,
       st.selfdestructs, st.halted) =
-      (0, 0, 12, [0x10], some (.selfdestruct, [])) := by rfl
+      (0, 0, 12, [(0x10, false)], some (.selfdestruct, [])) := by rfl
 
 example :
     let st := finishSelfdestruct (selfdestructTestState false) 0x10

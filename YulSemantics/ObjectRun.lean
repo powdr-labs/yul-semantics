@@ -121,7 +121,7 @@ theorem constructorCode_returns (L : Layout) (n : Ident) (d : Data)
     (hlt : d.size < 2 ^ 256) :
     ∃ V st, Run evm (constructorCode n) L.initState V st .halt ∧
       st.halted = some (.ret, d.bytes) := by
-  refine ⟨[], _, Step.block (Step.seqCons
+  refine ⟨[], _, Step.block (D := evm) (Step.seqCons
       (Step.exprStmt (Step.builtinOk
         (Step.argsCons (Step.argsCons (Step.argsCons Step.argsNil (eval_datasize _ _ _ _))
           (eval_dataoffset _ _ _ _)) Step.lit) rfl))
