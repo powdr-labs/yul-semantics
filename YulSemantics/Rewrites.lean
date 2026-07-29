@@ -135,7 +135,7 @@ theorem sstore_add_zero (x : Ident) :
       (.exprStmt (.builtin .sstore [.lit (.number 0), .var x])) :=
   EquivStmt.exprStmt_congr
     (EquivExpr.builtin_congr EVM.Op.sstore
-      (EquivArgs.of_forall₂ (.cons (EquivExpr.refl _) (.cons (add_zero x) .nil))))
+      (EquivArgs.of_forall₂ (D := EVM.evm) (.cons (EquivExpr.refl _) (.cons (add_zero x) .nil))))
 
 /-- The same rewrite at the whole-program level, written in concrete syntax (the `x` here is the
 Yul identifier `"x"`). The `hoist` side condition is `rfl` — the rewrite touches no function

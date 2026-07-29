@@ -79,7 +79,7 @@ private theorem run_dead (st0 : EvmState) (hstatic : st0.env.static = false) :
     show stepOp .sstore _ st0 = some _
     simp [stepOp, guardStatic, hstatic]
   have hrun : Run EVM.evm deadStoreRevert st0 [] _ .halt :=
-    Step.block (Step.seqCons
+    Step.block (D := EVM.evm) (Step.seqCons
       (Step.exprStmt (Step.builtinOk
         (Step.argsCons (Step.argsCons Step.argsNil Step.lit) Step.lit) hss))
       (Step.seqStop
@@ -93,7 +93,7 @@ private theorem run_bare (st0 : EvmState) :
     ∃ st', Run EVM.evm bareRevert st0 [] st' .halt ∧
       committedState st0 st' = { st0 with halted := some (.revert, []) } := by
   have hrun : Run EVM.evm bareRevert st0 [] _ .halt :=
-    Step.block (Step.seqStop
+    Step.block (D := EVM.evm) (Step.seqStop
       (Step.exprStmtHalt (Step.builtinHalt
         (Step.argsCons (Step.argsCons Step.argsNil Step.lit) Step.lit) rfl))
       (by decide))
@@ -143,7 +143,7 @@ example :
       st'.storage 0 = 1 ∧
       (committedState EvmState.init st').storage 0 = 0 := by
   have hrun : Run EVM.evm deadStoreRevert EvmState.init [] _ .halt :=
-    Step.block (Step.seqCons
+    Step.block (D := EVM.evm) (Step.seqCons
       (Step.exprStmt (Step.builtinOk
         (Step.argsCons (Step.argsCons Step.argsNil Step.lit) Step.lit) rfl))
       (Step.seqStop

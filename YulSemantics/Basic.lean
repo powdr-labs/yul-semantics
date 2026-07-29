@@ -1,10 +1,16 @@
-import Mathlib
+import Std.Tactic.BVDecide
 
 /-!
 # YulSemantics.Basic
 
-Confirms the toolchain and Mathlib are wired up, and that the EVM word type `BitVec 256`
+Confirms the toolchain is wired up and that the EVM word type `BitVec 256`
 (see `DESIGN.md` §4) is available with its bitvector automation.
+
+This module deliberately does **not** `import Mathlib`. Every Lean module's `initialize_*`
+calls the initializer of each module it imports, so a bare `import Mathlib` anywhere in a
+downstream executable's import closure is a genuine symbol reference that keeps all ~8200
+Mathlib object files alive at link time. `bv_decide` comes from `Std`, so nothing here needs
+Mathlib; the modules that really do use Mathlib import the specific files they need.
 
 Module map:
 * `YulSemantics.Ast`     — AST + control-flow `Outcome`

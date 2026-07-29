@@ -1,3 +1,4 @@
+import Mathlib.Data.Nat.Fib.Basic
 import YulSemantics.Interp
 import YulSemantics.Syntax
 import YulSemantics.BigStep
