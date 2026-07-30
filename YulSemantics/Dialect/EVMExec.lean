@@ -21,7 +21,8 @@ about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the f
   (`address` … `blobbasefee`, `selfbalance`), world-state reads via abstract environment maps
   (`balance`, `extcodesize`/`extcodecopy`/`extcodehash`, `blockhash`, `blobhash`), `log0`–`log4`,
   the object-data ops (`dataoffset`/`datasize`/`datacopy`, layout-abstracted — see below and
-  `YulSemantics.Object`), and the halting ops (`stop`/`return`/`revert`/`invalid`).
+  `YulSemantics.Object`), `loadimmutable` (abstracted the same way, see below), and the halting ops
+  (`stop`/`return`/`revert`/`invalid`).
 * **Open-world modeled**: `call`/`callcode`/`delegatecall`/`staticcall` and `create`/`create2` are
   interpreted by `evmWithExternal calls creates`. The supplied relations describe completed
   external executions and may include arbitrary nested calls, creations, and re-entrant callbacks.
@@ -41,7 +42,11 @@ about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the f
     `JUMP*`, `PC`) — Yul has no stack; these are bytecode-level and belong to the EVM repo and the
     compiler backend;
   - `pc()` (disallowed in modern Yul) and `difficulty()` (pre-Paris alias of `prevrandao`);
-  - solc extensions (`verbatim*`, `memoryguard`, `linkersymbol`, `setimmutable`/`loadimmutable`).
+  - solc extensions (`verbatim*`, `memoryguard`, `linkersymbol`, `setimmutable`). `linkersymbol`
+    and `setimmutable` are *eliminable* at compile time — a link map turns the former into a
+    literal address, and the latter into ordinary `mstore`s at the placeholder offsets a compiler
+    already knows — so neither needs an operation here. `loadimmutable` is not eliminable (its
+    value is only fixed once the deploying constructor has run) and is modeled below.
 
 ## Object data (`dataoffset`/`datasize`/`datacopy`)
 
@@ -53,6 +58,20 @@ are chosen at assembly time — so they are read from the `ExecEnv.dataOffset`/`
 the compiler supplies consistently with the object (`YulSemantics.Object`). Modeling caveat: a name
 is keyed by its string-literal encoding `litValue (.string name)`; this is injective for the short
 identifiers Yul object/data names actually are (≤ 31 bytes, distinct), and aliases otherwise.
+
+## Immutables (`loadimmutable`)
+
+`loadimmutable(name)` returns the value an immutable was given by the constructor that deployed
+this code. From the deployed frame's point of view that is a **constant supplied with the code**:
+it was fixed before this frame started and is baked into the bytecode. So it is read from
+`ExecEnv.immutable`, keyed by `litValue (.string name)` exactly like the layout maps, with the same
+modeling caveat about name aliasing. A compiler must install the map consistently with the bytes it
+emitted — the same obligation `Layout.Consistent` states for data segments.
+
+The companion `setimmutable(base, name, value)` is deliberately *not* an operation: it writes into
+the in-memory copy of the deployed code that the constructor is about to return, at offsets the
+compiler chose, so it is fully expressible as ordinary `mstore`s once those offsets are known.
+Keeping it out of `Op` keeps the code-layout choice on the compiler's side of the boundary.
 
 Spec abstractions (documented): `blockhash`'s 256-block window and `blobhash`'s index bound are
 abstracted into the environment maps. Gas is not modeled anywhere (`DESIGN.md` §1).
@@ -155,6 +174,13 @@ structure ExecEnv where
   dataOffset    : U256 → U256 := fun _ => 0
   /-- Object-layout size map for `datasize`, keyed like `dataOffset`. -/
   dataSize      : U256 → U256 := fun _ => 0
+  /-- Immutable-value map for `loadimmutable`, keyed like `dataOffset` by the *name's*
+  string-literal encoding. Like the layout maps this is **not** computed by this semantics: an
+  immutable's value is fixed while the deploying constructor runs and is then baked into the
+  deployed code, so from the deployed frame's point of view it is a constant supplied with the
+  code. The compiler installs it consistently with the bytes it emitted, exactly as it does for
+  `dataOffset`/`dataSize`. -/
+  immutable     : U256 → U256 := fun _ => 0
   deriving Inhabited
 
 /-- The (gas-free) EVM machine state.
@@ -729,6 +755,7 @@ def stepOp (op : Op) (args : List U256) (st : EvmState) : Option (BuiltinResult 
   -- encoding); `datacopy` copies from the code region, exactly like `codecopy`.
   | .datasize   => rd1 (fun k => st.env.dataSize k) args st
   | .dataoffset => rd1 (fun k => st.env.dataOffset k) args st
+  | .loadimmutable => rd1 (fun k => st.env.immutable k) args st
   | .datacopy   => match args with
       | [dst, off, n] =>
           some (.ok [] { touchMemory st dst.toNat n.toNat with

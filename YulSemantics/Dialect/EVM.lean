@@ -267,6 +267,22 @@ example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState) (g :
 
 example (st : EvmState) : stepOp .gas [] st = none := rfl
 
+-- `loadimmutable` reads the environment's immutable map, keyed by the name's string encoding,
+-- exactly as `dataoffset`/`datasize` read the layout maps.
+example (st : EvmState) (k : U256) :
+    stepOp .loadimmutable [k] st = some (.ok [st.env.immutable k] st) := by
+  simp [stepOp, rd1]
+
+-- It is a *read*: the state is untouched, and two reads of the same name agree (so it may be
+-- CSE'd, unlike `gas()`).
+example (st : EvmState) (k : U256) (v₁ v₂ : U256)
+    (h₁ : stepOp .loadimmutable [k] st = some (.ok [v₁] st))
+    (h₂ : stepOp .loadimmutable [k] st = some (.ok [v₂] st)) : v₁ = v₂ := by
+  simp_all
+
+-- Wrong arity is stuck, like every other unary reader.
+example (st : EvmState) : stepOp .loadimmutable [] st = none := rfl
+
 -- The idiomatic `call(gas(), …)` pattern now has a derivation: pick the gas oracle's word, then
 -- take any external response for the call it feeds.
 example (external : ExternalCalls) (st : EvmState) (g : U256) (response : CallResponse)
