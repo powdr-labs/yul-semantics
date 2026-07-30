@@ -23,19 +23,21 @@ about. The string↔`Op` correspondence (`opName`, `parse`) is confined to the f
   the object-data ops (`dataoffset`/`datasize`/`datacopy`, layout-abstracted — see below and
   `YulSemantics.Object`), and the halting ops (`stop`/`return`/`revert`/`invalid`).
 * **Open-world modeled**: `call`/`callcode`/`delegatecall`/`staticcall` and `create`/`create2` are
-  interpreted by `evmWithExternal calls creates`. The supplied relations describe completed
+  interpreted by `evmWithExternal calls creates gasOracle`. The supplied relations describe completed
   external executions and may include arbitrary nested calls, creations, and re-entrant callbacks.
   The call-only `evmWithCalls` API remains available. The original executable `evm` keeps these
   operations stuck because an open-world relation has no canonical evaluator.
 * **Fully modeled (terminal world update)**: `selfdestruct` transfers the executing account's
   balance, records the destruction scheduled for transaction finalization, and halts. The
   environment's `createdThisTx` bit selects the post-Cancun self-beneficiary behavior.
-* **Open-world modeled (nondeterministic oracle)**: `gas` is **deliberately** not a function of our
-  state — it is nondeterministic by design (`DESIGN.md`). In the open-world dialects
-  (`evmWithExternal`/`evmWithCalls`) `builtinWithExternal .gas []` returns an *arbitrary* word and
-  leaves the state unchanged, modeling remaining gas as an oracle read. It must not be given a
-  deterministic `stepOp` (that would license CSE), so it remains stuck in the executable reference
-  dialect `evm` (`stepOp .gas = none`), which has no oracle to consult.
+* **Open-world modeled (environment oracle)**: `gas` is **deliberately** not a function of our
+  state (`DESIGN.md`). In `evmWithExternal calls creates gasOracle` it returns a word permitted by
+  the supplied `ExternalGas` oracle and leaves the state unchanged. `ExternalGas.any` is the
+  historical unconstrained read (and what `evmWithCalls` installs); a narrower oracle lets a client
+  couple `gas()` to a concrete machine's remaining gas, which is what makes a compiler forward
+  simulation to the target `GAS` instruction possible at all. It must not be given a deterministic
+  `stepOp` (that would license CSE), so it remains stuck in the executable reference dialect `evm`
+  (`stepOp .gas = none`), which has no oracle to consult.
 * **Deliberately absent from `Op`**:
   - stack/control opcodes (`DUP*`, `SWAP*`, incl. EIP-663 `DUPN`/`SWAPN`, `PUSH*`, `POP`-as-stack-op,
     `JUMP*`, `PC`) — Yul has no stack; these are bytecode-level and belong to the EVM repo and the
@@ -504,6 +506,35 @@ def any : ExternalCreates where Create := fun _ _ _ => True
 
 end ExternalCreates
 
+/-- Open-world interpretation of the `gas()` oracle: which remaining-gas words the surrounding
+execution environment may report in a given state.
+
+Remaining gas is not a function of the state this semantics tracks — the source language
+deliberately has no gas accounting (`DESIGN.md` §1) — so, exactly like `ExternalCalls` and
+`ExternalCreates`, the environment supplies the permitted answers. Keeping it a *parameter* rather
+than hard-coding "any word" is what lets a client couple the oracle to a concrete machine: a
+compiler forward-simulation proof, for instance, can only realize `gas()` with a target `GAS`
+instruction when the source oracle is the one that reports exactly that machine's remaining gas.
+`ExternalGas.any` recovers the historical unconstrained read. -/
+structure ExternalGas where
+  /-- Relates a pre-state to any remaining-gas word `gas()` may report there. -/
+  Gas : EvmState → U256 → Prop
+
+namespace ExternalGas
+
+/-- The maximally open oracle: `gas()` may report any word. This is the historical behavior and the
+right choice for may-semantics; it admits no forward-simulation realization. -/
+def any : ExternalGas where Gas := fun _ _ => True
+
+/-- No remaining-gas answer is available, so `gas()` is stuck. The counterpart of
+`ExternalCalls.none`/`ExternalCreates.none` for a fully closed world. -/
+def none : ExternalGas where Gas := fun _ _ => False
+
+/-- The deterministic oracle that reports exactly `f st`. -/
+def ofFun (f : EvmState → U256) : ExternalGas where Gas := fun st g => g = f st
+
+end ExternalGas
+
 /-- Install the mutable world projection produced by a successful external call. Immutable frame
 context (address/caller/calldata/block fields), caller memory, returndata, and halt status are
 preserved here and handled separately by `finishCall`. -/
@@ -811,8 +842,10 @@ def externalCreate (external : ExternalCreates) (kind : CreateKind) (value offse
     result = .ok [response.result] (finishCreate st response offset.toNat size.toNat)
 
 /-- Combined open-world built-in relation. Local operations retain the executable `stepOp` graph;
-CALL-family and CREATE-family operations are interpreted by their respective relations. -/
+CALL-family and CREATE-family operations are interpreted by their respective relations, and `gas()`
+by the environment's remaining-gas oracle. -/
 def builtinWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
+    (gasOracle : ExternalGas)
     (op : Op) (args : List U256) (st : EvmState)
     (result : BuiltinResult U256 EvmState) : Prop :=
   match op with
@@ -855,18 +888,19 @@ def builtinWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
           if st.env.static then result = .halt { st with halted := some (.staticViolation, []) }
           else externalCreate creates .create2 value offset size (some salt) st result
       | _ => False
-  -- `gas()` is a nondeterministic oracle read: it returns an arbitrary remaining-gas word and
-  -- leaves the state unchanged. It is deliberately absent from the deterministic `stepOp` (which
-  -- has no oracle), so it lives only in this open-world relation. See `DESIGN.md` §1.
+  -- `gas()` is an oracle read: it returns a remaining-gas word the environment permits and leaves
+  -- the state unchanged. It is deliberately absent from the deterministic `stepOp` (which has no
+  -- oracle), so it lives only in this open-world relation. With `ExternalGas.any` this is the
+  -- historical unconstrained `∃ g`. See `DESIGN.md` §1.
   | .gas => match args with
-      | []   => ∃ g : U256, result = .ok [g] st
+      | []   => ∃ g : U256, gasOracle.Gas st g ∧ result = .ok [g] st
       | _    => False
   | _ => stepOp op args st = some result
 
-/-- Backwards-compatible call-only built-in relation. -/
+/-- Backwards-compatible call-only built-in relation, with the unconstrained gas oracle. -/
 def builtin (external : ExternalCalls) :
     Op → List U256 → EvmState → BuiltinResult U256 EvmState → Prop :=
-  builtinWithExternal external ExternalCreates.none
+  builtinWithExternal external ExternalCreates.none ExternalGas.any
 
 -- `effects`, `opName`, `parse`, and `mkCall` moved to `YulSemantics.Dialect.EVMOp`.
 
@@ -885,18 +919,19 @@ to the concrete `Value := BitVec 256` / `State := EvmState`. -/
 
 /-- The gas-free EVM reference dialect with open-world call and creation behavior. Unlike `evm`,
 this dialect may be nondeterministic and therefore has no canonical executable interpreter. -/
-@[reducible] def evmWithExternal (calls : ExternalCalls) (creates : ExternalCreates) : Dialect where
+@[reducible] def evmWithExternal (calls : ExternalCalls) (creates : ExternalCreates)
+    (gasOracle : ExternalGas) : Dialect where
   Op       := Op
   Value    := U256
   State    := EvmState
   litValue := litValue
   litWF    := litWF
-  Builtin  := builtinWithExternal calls creates
+  Builtin  := builtinWithExternal calls creates gasOracle
   effects  := effects
 
-/-- Backwards-compatible call-only open-world dialect. -/
+/-- Backwards-compatible call-only open-world dialect, with the unconstrained gas oracle. -/
 @[reducible] def evmWithCalls (external : ExternalCalls) : Dialect :=
-  evmWithExternal external ExternalCreates.none
+  evmWithExternal external ExternalCreates.none ExternalGas.any
 
 /-- The EVM dialect as an `ExecDialect`: `Builtin` is defined from `stepOp`, so the executable
 `builtinFn := stepOp` agrees with it by construction. `@[reducible]` for the same reason as `evm`. -/
