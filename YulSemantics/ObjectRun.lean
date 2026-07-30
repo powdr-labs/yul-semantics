@@ -37,10 +37,17 @@ structure Layout where
   dataOffset : U256 → U256
   /-- Byte length of each named segment, keyed like `dataOffset`. -/
   dataSize   : U256 → U256
+  /-- Value of each immutable read by `loadimmutable`, keyed like `dataOffset` by the name's
+  string-literal encoding. Like the layout maps this is a compiler artifact: an immutable's value
+  is fixed while the deploying constructor runs and is then baked into the deployed code, so from
+  the deployed frame's point of view it is a constant supplied with that code. Defaults to the
+  all-zero map, which is the right reading for an object that has no immutables. -/
+  immutable  : U256 → U256 := fun _ => 0
 
 /-- The execution environment induced by a layout (all other fields default). -/
 def Layout.env (L : Layout) : ExecEnv :=
-  { code := L.code, dataOffset := L.dataOffset, dataSize := L.dataSize }
+  { code := L.code, dataOffset := L.dataOffset, dataSize := L.dataSize,
+    immutable := L.immutable }
 
 /-- The initial machine state for running an object under a layout. -/
 def Layout.initState (L : Layout) : EvmState := { EvmState.init with env := L.env }
@@ -111,6 +118,20 @@ theorem eval_dataoffset (funs : FunEnv evm) (V : VEnv evm) (st : EvmState) (n : 
     EvalExpr evm funs V st (.builtin .dataoffset [.lit (.string n)])
       (.vals [st.env.dataOffset (litValue (.string n))] st) :=
   Step.builtinOk (Step.argsCons Step.argsNil Step.lit) rfl
+
+/-- `loadimmutable(name)` evaluates to the layout's recorded value for that immutable, on the
+same keying as the layout maps. -/
+theorem eval_loadimmutable (funs : FunEnv evm) (V : VEnv evm) (st : EvmState) (n : Ident) :
+    EvalExpr evm funs V st (.builtin .loadimmutable [.lit (.string n)])
+      (.vals [st.env.immutable (litValue (.string n))] st) :=
+  Step.builtinOk (Step.argsCons Step.argsNil Step.lit) rfl
+
+/-- A layout installs its immutable map into the environment its runs use. -/
+@[simp] theorem Layout.env_immutable (L : Layout) : L.env.immutable = L.immutable := rfl
+
+/-- A layout that records no immutables reads every one as zero. -/
+example (L : Layout) (h : L.immutable = fun _ => 0) (k : U256) : L.env.immutable k = 0 := by
+  simp [h]
 
 /-- **Capstone**: under a layout that places the data segment `n` (of byte length `d.size`, which
 must fit a word), the canonical constructor halts, returning exactly `d.bytes`. -/
