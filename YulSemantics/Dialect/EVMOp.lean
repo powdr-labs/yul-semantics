@@ -39,7 +39,7 @@ inductive Op
   | calldataload | calldatasize | calldatacopy | codesize | codecopy
   | returndatasize | returndatacopy
   -- object data (layout-abstracted; see `YulSemantics.Object`)
-  | datasize | dataoffset | datacopy
+  | datasize | dataoffset | datacopy | loadimmutable
   -- execution environment
   | address | origin | caller | callvalue | gasprice | selfbalance
   | coinbase | timestamp | number | prevrandao | gaslimit | chainid | basefee | blobbasefee
@@ -98,7 +98,7 @@ def effects : Op → Effects
   | .coinbase | .timestamp | .number | .prevrandao | .gaslimit | .chainid
   | .basefee | .blobbasefee
   | .balance | .extcodesize | .extcodehash | .blockhash | .blobhash
-  | .datasize | .dataoffset =>
+  | .datasize | .dataoffset | .loadimmutable =>
       { deterministic := true, reads := true, writes := false, halts := false }
   -- deterministic *blind* memory writes: the stored bytes come from the arguments, the prior
   -- contents are never observed → reads := false even though writes := true (see the doc comment
@@ -154,6 +154,7 @@ def opName : Op → String
   | .calldatacopy => "calldatacopy" | .codesize => "codesize" | .codecopy => "codecopy"
   | .returndatasize => "returndatasize" | .returndatacopy => "returndatacopy"
   | .datasize => "datasize" | .dataoffset => "dataoffset" | .datacopy => "datacopy"
+  | .loadimmutable => "loadimmutable"
   | .address => "address" | .origin => "origin" | .caller => "caller"
   | .callvalue => "callvalue" | .gasprice => "gasprice" | .selfbalance => "selfbalance"
   | .coinbase => "coinbase" | .timestamp => "timestamp" | .number => "number"
@@ -188,6 +189,7 @@ def parse : Ident → Option Op
   | "codecopy" => some .codecopy | "returndatasize" => some .returndatasize
   | "returndatacopy" => some .returndatacopy
   | "datasize" => some .datasize | "dataoffset" => some .dataoffset | "datacopy" => some .datacopy
+  | "loadimmutable" => some .loadimmutable
   | "address" => some .address | "origin" => some .origin | "caller" => some .caller
   | "callvalue" => some .callvalue | "gasprice" => some .gasprice
   | "selfbalance" => some .selfbalance | "coinbase" => some .coinbase
