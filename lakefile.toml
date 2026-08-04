@@ -1,8 +1,7 @@
 name = "yul-semantics"
 version = "0.1.0"
-# Only the library is a default target: building the `yul-semantics` exe (a placeholder) would
-# compile + link native object code for every transitively imported Mathlib module (~8500 `:c.o`
-# clang jobs), which the Mathlib cache does not ship — that dominates CI time. Build the exe
+# Only the library is a default target: building the `yul-semantics` exe (a placeholder) also
+# compiles + links native object code for every transitively imported module. Build the exe
 # explicitly with `lake build yul-semantics` if needed.
 defaultTargets = ["YulSemantics"]
 # `lake lint` runs the Batteries environment linters (docBlame, unusedArguments, …).
@@ -12,8 +11,10 @@ lintDriver = "batteries/runLinter"
 [leanOptions]
 warningAsError = true
 
+# Batteries (not Mathlib!) is the only dependency, kept for the `runLinter` driver above and the
+# `nolint` attribute (`YulSemantics.Dialect` imports `Batteries.Tactic.Lint`).
 [[require]]
-name = "mathlib"
+name = "batteries"
 scope = "leanprover-community"
 rev = "v4.31.0"
 

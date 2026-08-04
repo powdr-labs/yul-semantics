@@ -1,4 +1,3 @@
-import Mathlib.Data.Nat.Fib.Basic
 import YulSemantics.Interp
 import YulSemantics.Syntax
 import YulSemantics.BigStep
@@ -10,7 +9,7 @@ An example Yul contract that reads a number `n` from calldata, computes the `n`-
 (mod `2^256`), writes it to memory, and returns it — together with proofs of its semantics:
 
 * **concrete** end-to-end runs via the interpreter (`native_decide`), for several inputs; and
-* a **general** theorem: for every input `n`, the contract halts returning `Nat.fib n` (as a word).
+* a **general** theorem: for every input `n`, the contract halts returning `fib n` (as a word).
 
 The general proof factors through a loop-invariant lemma (`fibLoop`) proven by induction on the
 number of remaining iterations, over the big-step judgment.
@@ -19,6 +18,16 @@ number of remaining iterations, over the big-step judgment.
 namespace YulSemantics.FibExample
 
 open YulSemantics EVM
+
+/-- The Fibonacci numbers (a local stand-in for Mathlib's `Nat.fib`; the naive double recursion is
+fine at the scale of the examples below). -/
+def fib : Nat → Nat
+  | 0 => 0
+  | 1 => 1
+  | n + 2 => fib n + fib (n + 1)
+
+/-- The defining recurrence, in rewrite-friendly form. -/
+theorem fib_add_two (n : Nat) : fib (n + 2) = fib n + fib (n + 1) := rfl
 
 /-- The Fibonacci contract, in concrete Yul syntax. `a`/`b` carry consecutive Fibonacci numbers;
 after `n` iterations `a = fib n`. -/
@@ -45,22 +54,22 @@ def callWith (n : Nat) : EvmState :=
 /-- `fib 0 = 0`. -/
 example :
     (Interp.run EVM.exec 3000 fibContract (callWith 0)).map (fun r => loadWord r.2.1.memory 0)
-      = .ok (BitVec.ofNat 256 (Nat.fib 0)) := by native_decide
+      = .ok (BitVec.ofNat 256 (fib 0)) := by native_decide
 
 /-- `fib 1 = 1`. -/
 example :
     (Interp.run EVM.exec 3000 fibContract (callWith 1)).map (fun r => loadWord r.2.1.memory 0)
-      = .ok (BitVec.ofNat 256 (Nat.fib 1)) := by native_decide
+      = .ok (BitVec.ofNat 256 (fib 1)) := by native_decide
 
 /-- `fib 7 = 13`. -/
 example :
     (Interp.run EVM.exec 3000 fibContract (callWith 7)).map (fun r => loadWord r.2.1.memory 0)
-      = .ok (BitVec.ofNat 256 (Nat.fib 7)) := by native_decide
+      = .ok (BitVec.ofNat 256 (fib 7)) := by native_decide
 
 /-- `fib 10 = 55`, and the full return path: the contract halts returning the 32-byte word. -/
 example :
     (Interp.run EVM.exec 3000 fibContract (callWith 10)).map (fun r => r.2.1.halted)
-      = .ok (some (.ret, List.replicate 31 0 ++ [UInt8.ofNat (Nat.fib 10)])) := by native_decide
+      = .ok (some (.ret, List.replicate 31 0 ++ [UInt8.ofNat (fib 10)])) := by native_decide
 
 /-! ### The general theorem
 
@@ -124,11 +133,11 @@ is pure), so it threads through unchanged. -/
 theorem fibLoop (funs : FunEnv evm) (st : EvmState) (nv : U256) :
     ∀ (k I : Nat), I + k = nv.toNat →
       ExecLoop evm funs
-        [("i", BitVec.ofNat 256 I), ("b", BitVec.ofNat 256 (Nat.fib (I + 1))),
-         ("a", BitVec.ofNat 256 (Nat.fib I)), ("n", nv)] st
+        [("i", BitVec.ofNat 256 I), ("b", BitVec.ofNat 256 (fib (I + 1))),
+         ("a", BitVec.ofNat 256 (fib I)), ("n", nv)] st
         (.builtin .lt [.var "i", .var "n"]) fibPost fibBody
-        [("i", BitVec.ofNat 256 nv.toNat), ("b", BitVec.ofNat 256 (Nat.fib (nv.toNat + 1))),
-         ("a", BitVec.ofNat 256 (Nat.fib nv.toNat)), ("n", nv)] st .normal := by
+        [("i", BitVec.ofNat 256 nv.toNat), ("b", BitVec.ofNat 256 (fib (nv.toNat + 1))),
+         ("a", BitVec.ofNat 256 (fib nv.toNat)), ("n", nv)] st .normal := by
   intro k
   induction k with
   | zero =>
@@ -148,17 +157,17 @@ theorem fibLoop (funs : FunEnv evm) (st : EvmState) (nv : U256) :
     refine Step.loopStep
       (Step.builtinOk (Step.argsCons (Step.argsCons Step.argsNil (Step.var rfl)) (Step.var rfl)) rfl)
       ?_
-      (fib_body funs st (BitVec.ofNat 256 I) (BitVec.ofNat 256 (Nat.fib I))
-        (BitVec.ofNat 256 (Nat.fib (I + 1))) nv)
+      (fib_body funs st (BitVec.ofNat 256 I) (BitVec.ofNat 256 (fib I))
+        (BitVec.ofNat 256 (fib (I + 1))) nv)
       (Or.inl rfl)
-      (fib_post funs st (BitVec.ofNat 256 I) (BitVec.ofNat 256 (Nat.fib (I + 1)))
-        (BitVec.ofNat 256 (Nat.fib I) + BitVec.ofNat 256 (Nat.fib (I + 1))) nv)
+      (fib_post funs st (BitVec.ofNat 256 I) (BitVec.ofNat 256 (fib (I + 1)))
+        (BitVec.ofNat 256 (fib I) + BitVec.ofNat 256 (fib (I + 1))) nv)
       ?_
     · show b2w ((BitVec.ofNat 256 I).ult nv) ≠ evm.zero
       rw [hcond]; decide
     · have hi : BitVec.ofNat 256 I + BitVec.ofNat 256 1 = BitVec.ofNat 256 (I + 1) := ofNat_add I 1
-      have hb : BitVec.ofNat 256 (Nat.fib I) + BitVec.ofNat 256 (Nat.fib (I + 1))
-              = BitVec.ofNat 256 (Nat.fib (I + 2)) := by rw [ofNat_add, ← Nat.fib_add_two]
+      have hb : BitVec.ofNat 256 (fib I) + BitVec.ofNat 256 (fib (I + 1))
+              = BitVec.ofNat 256 (fib (I + 2)) := by rw [ofNat_add, ← fib_add_two]
       rw [hi, hb]
       exact ih (I + 1) (by omega)
 
@@ -185,18 +194,18 @@ slice into `wordBytes`). -/
 theorem fibContract_correct (st0 : EvmState) :
     ∃ st, Run evm fibContract st0 [] st .halt ∧
       st.halted = some (.ret,
-        wordBytes (BitVec.ofNat 256 (Nat.fib (wordFrom st0.env.calldata 0).toNat))) := by
+        wordBytes (BitVec.ofNat 256 (fib (wordFrom st0.env.calldata 0).toNat))) := by
   have hstmts : ExecStmts evm (hoist evm fibContract :: []) [] st0 fibContract
-      [("b", BitVec.ofNat 256 (Nat.fib ((wordFrom st0.env.calldata 0).toNat + 1))),
-       ("a", BitVec.ofNat 256 (Nat.fib (wordFrom st0.env.calldata 0).toNat)),
+      [("b", BitVec.ofNat 256 (fib ((wordFrom st0.env.calldata 0).toNat + 1))),
+       ("a", BitVec.ofNat 256 (fib (wordFrom st0.env.calldata 0).toNat)),
        ("n", wordFrom st0.env.calldata 0)]
       { touchMemory
           { touchMemory st0 0 32 with
             memory := storeWord st0.memory 0
-              (BitVec.ofNat 256 (Nat.fib (wordFrom st0.env.calldata 0).toNat)) }
+              (BitVec.ofNat 256 (fib (wordFrom st0.env.calldata 0).toNat)) }
           0 32 with
         halted := some (.ret, readBytes (storeWord st0.memory 0
-          (BitVec.ofNat 256 (Nat.fib (wordFrom st0.env.calldata 0).toNat))) 0 32) }
+          (BitVec.ofNat 256 (fib (wordFrom st0.env.calldata 0).toNat))) 0 32) }
       .halt := by
     -- let n := calldataload(0)
     refine Step.seqCons (Step.letVal (Step.builtinOk (Step.argsCons Step.argsNil Step.lit) rfl) rfl) ?_
