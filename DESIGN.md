@@ -389,5 +389,6 @@ for the equivalence/simulation results above.
 ## Dependencies
 
 - Lean toolchain: `leanprover/lean4:v4.31.0` (see `lean-toolchain`).
-- [Batteries](https://github.com/leanprover-community/batteries), pinned to the matching tag
-  (only for the `lake lint` driver and the `nolint` attribute — no Mathlib).
+- [Batteries](https://github.com/leanprover-community/batteries), pinned to the matching tag —
+  only as the `lake lint` driver; no library module imports it (and none imports Mathlib or any
+  tactic-framework module, keeping the elaborator out of downstream executables).

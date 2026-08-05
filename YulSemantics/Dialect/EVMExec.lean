@@ -98,10 +98,14 @@ structure LogEntry where
   topics : List U256
   /-- The logged memory slice. -/
   data   : List UInt8
-  deriving Repr, DecidableEq, Inhabited
+  deriving DecidableEq, Inhabited
 
--- The `prec` argument of the auto-derived pretty-printer is genuinely unused for this plain record.
-attribute [nolint unusedArguments] instReprLogEntry.repr
+-- Handwritten (not derived): the derived instance's unused `prec` argument trips the
+-- `unusedArguments` linter, and `@[nolint]` would drag `Batteries.Tactic.Lint` — and with it the
+-- whole elaborator — into every downstream executable (see `YulSemantics.Basic`).
+instance : Repr LogEntry where
+  reprPrec l _ :=
+    f!"\{ address := {repr l.address}, topics := {repr l.topics}, data := {repr l.data} }"
 
 /-- The (immutable) execution environment: transaction/block context, input data, and abstract
 read-only views of the world state. Addresses are represented as words. -/

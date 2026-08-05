@@ -11,8 +11,8 @@ lintDriver = "batteries/runLinter"
 [leanOptions]
 warningAsError = true
 
-# Batteries (not Mathlib!) is the only dependency, kept for the `runLinter` driver above and the
-# `nolint` attribute (`YulSemantics.Dialect` imports `Batteries.Tactic.Lint`).
+# Batteries (not Mathlib!) is the only dependency, kept solely for the `runLinter` driver above.
+# No library module imports it, so none of it is linked into downstream executables.
 [[require]]
 name = "batteries"
 scope = "leanprover-community"
