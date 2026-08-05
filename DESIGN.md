@@ -389,4 +389,5 @@ for the equivalence/simulation results above.
 ## Dependencies
 
 - Lean toolchain: `leanprover/lean4:v4.31.0` (see `lean-toolchain`).
-- [Mathlib](https://github.com/leanprover-community/mathlib4), pinned to the matching tag.
+- [Batteries](https://github.com/leanprover-community/batteries), pinned to the matching tag
+  (only for the `lake lint` driver and the `nolint` attribute — no Mathlib).

@@ -1,4 +1,3 @@
-import Mathlib.Data.List.Forall2
 import YulSemantics.BigStep
 
 /-!
@@ -40,6 +39,21 @@ For whole programs, equivalence of the top-level blocks gives identical `Run` re
 -/
 
 namespace YulSemantics
+
+/-- Pointwise lifting of a relation to lists: `Forall₂ R l₁ l₂` holds when `l₁` and `l₂` have the
+same length and `R` relates their elements position-wise. (A local stand-in for Mathlib's
+`List.Forall₂` — the congruence lemmas below need nothing more than the inductive and `imp`.) -/
+inductive Forall₂ (R : α → β → Prop) : List α → List β → Prop
+  /-- Two empty lists are pointwise related. -/
+  | nil : Forall₂ R [] []
+  /-- Related heads on pointwise-related tails give pointwise-related lists. -/
+  | cons : R a b → Forall₂ R l₁ l₂ → Forall₂ R (a :: l₁) (b :: l₂)
+
+/-- `Forall₂` is monotone in the relation. -/
+theorem Forall₂.imp {R S : α → β → Prop} (H : ∀ a b, R a b → S a b) :
+    ∀ {l₁ l₂}, Forall₂ R l₁ l₂ → Forall₂ S l₁ l₂
+  | _, _, .nil => .nil
+  | _, _, .cons h t => .cons (H _ _ h) (t.imp H)
 
 variable {D : Dialect} [DecidableEq D.Value]
 
@@ -124,7 +138,7 @@ theorem EquivBlock.run_iff {p₁ p₂ : Block D.Op} (h : EquivBlock D p₁ p₂)
 /-! ### Congruence: argument lists -/
 
 private theorem argsImp {es₁ es₂ : List (Expr D.Op)}
-    (h : List.Forall₂
+    (h : Forall₂
       (fun e₁ e₂ => ∀ funs V st r, EvalExpr D funs V st e₁ r → EvalExpr D funs V st e₂ r) es₁ es₂) :
     ∀ funs V st r, EvalArgs D funs V st es₁ r → EvalArgs D funs V st es₂ r := by
   induction h with
@@ -137,14 +151,14 @@ private theorem argsImp {es₁ es₂ : List (Expr D.Op)}
       | argsHeadHalt ha hh => exact Step.argsHeadHalt (ih _ _ _ _ ha) (he _ _ _ _ hh)
 
 private theorem forall₂_symm {α : Type _} {R : α → α → Prop} {l₁ l₂ : List α}
-    (hsym : ∀ {a b}, R a b → R b a) (h : List.Forall₂ R l₁ l₂) : List.Forall₂ R l₂ l₁ := by
+    (hsym : ∀ {a b}, R a b → R b a) (h : Forall₂ R l₁ l₂) : Forall₂ R l₂ l₁ := by
   induction h with
   | nil => exact .nil
   | cons hh _ ih => exact .cons (hsym hh) ih
 
 /-- Pairwise-equivalent argument lists are equivalent. -/
 theorem EquivArgs.of_forall₂ {es₁ es₂ : List (Expr D.Op)}
-    (h : List.Forall₂ (EquivExpr D) es₁ es₂) : EquivArgs D es₁ es₂ :=
+    (h : Forall₂ (EquivExpr D) es₁ es₂) : EquivArgs D es₁ es₂ :=
   fun _ _ _ _ =>
     ⟨argsImp (h.imp fun _ _ he funs V st r => (he funs V st r).mp) _ _ _ _,
      argsImp ((forall₂_symm (fun he => he.symm) h).imp
@@ -193,7 +207,7 @@ theorem EquivStmts.cons_congr {s₁ s₂ : Stmt D.Op} {ss₁ ss₂} (hs : EquivS
 
 /-- Pairwise-equivalent statement sequences are equivalent. -/
 theorem EquivStmts.of_forall₂ {ss₁ ss₂ : List (Stmt D.Op)}
-    (h : List.Forall₂ (EquivStmt D) ss₁ ss₂) : EquivStmts D ss₁ ss₂ := by
+    (h : Forall₂ (EquivStmt D) ss₁ ss₂) : EquivStmts D ss₁ ss₂ := by
   induction h with
   | nil => exact EquivStmts.refl []
   | cons hh _ ih => exact EquivStmts.cons_congr hh ih
@@ -214,7 +228,7 @@ theorem EquivBlock.of_stmts {b₁ b₂ : Block D.Op} (hss : EquivStmts D b₁ b�
   fun _ _ _ _ _ _ => ⟨blockImp hss hh, blockImp hss.symm hh.symm⟩
 
 /-- Convenience: pairwise-equivalent bodies with equal hoisted scopes form equivalent blocks. -/
-theorem EquivBlock.of_forall₂ {b₁ b₂ : Block D.Op} (h : List.Forall₂ (EquivStmt D) b₁ b₂)
+theorem EquivBlock.of_forall₂ {b₁ b₂ : Block D.Op} (h : Forall₂ (EquivStmt D) b₁ b₂)
     (hh : hoist D b₁ = hoist D b₂) : EquivBlock D b₁ b₂ :=
   EquivBlock.of_stmts (EquivStmts.of_forall₂ h) hh
 
@@ -273,7 +287,7 @@ theorem EquivStmt.cond_congr {c₁ c₂ : Expr D.Op} {b₁ b₂ : Block D.Op} (h
 /-- `selectSwitch` respects pairwise-related cases: equal labels, equivalent blocks. -/
 private theorem selectSwitch_congr {cv : D.Value} {cs₁ cs₂ : List (Literal × Block D.Op)}
     {dflt₁ dflt₂ : Option (Block D.Op)}
-    (hcases : List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs₁ cs₂)
+    (hcases : Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs₁ cs₂)
     (hdflt : EquivBlock D (dflt₁.getD []) (dflt₂.getD [])) :
     EquivBlock D (selectSwitch D cv cs₁ dflt₁) (selectSwitch D cv cs₂ dflt₂) := by
   induction hcases with
@@ -306,7 +320,7 @@ private theorem switchImp {c₁ c₂ : Expr D.Op} {cs₁ cs₂ dflt₁ dflt₂} 
 equivalent blocks), and equivalent defaults. -/
 theorem EquivStmt.switch_congr {c₁ c₂ : Expr D.Op} {cs₁ cs₂ : List (Literal × Block D.Op)}
     {dflt₁ dflt₂ : Option (Block D.Op)} (hc : EquivExpr D c₁ c₂)
-    (hcases : List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs₁ cs₂)
+    (hcases : Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs₁ cs₂)
     (hdflt : EquivBlock D (dflt₁.getD []) (dflt₂.getD [])) :
     EquivStmt D (.switch c₁ cs₁ dflt₁) (.switch c₂ cs₂ dflt₂) := by
   have hcases' := forall₂_symm

@@ -6,11 +6,11 @@ import Std.Tactic.BVDecide
 Confirms the toolchain is wired up and that the EVM word type `BitVec 256`
 (see `DESIGN.md` §4) is available with its bitvector automation.
 
-This module deliberately does **not** `import Mathlib`. Every Lean module's `initialize_*`
-calls the initializer of each module it imports, so a bare `import Mathlib` anywhere in a
-downstream executable's import closure is a genuine symbol reference that keeps all ~8200
-Mathlib object files alive at link time. `bv_decide` comes from `Std`, so nothing here needs
-Mathlib; the modules that really do use Mathlib import the specific files they need.
+This project does **not** depend on Mathlib. Every Lean module's `initialize_*` calls the
+initializer of each module it imports, so a bare `import Mathlib` anywhere in a downstream
+executable's import closure is a genuine symbol reference that keeps all ~8200 Mathlib object
+files alive at link time. `bv_decide` comes from `Std` (core); the only external dependency is
+Batteries, kept for the `lake lint` driver and the `nolint` attribute.
 
 Module map:
 * `YulSemantics.Ast`     — AST + control-flow `Outcome`

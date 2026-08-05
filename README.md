@@ -25,7 +25,6 @@ Requires the Lean toolchain pinned in [`lean-toolchain`](./lean-toolchain) (mana
 [`elan`](https://github.com/leanprover/elan)).
 
 ```sh
-lake exe cache get   # fetch prebuilt Mathlib oleans
 lake build
 ```
 

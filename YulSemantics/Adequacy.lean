@@ -1,4 +1,3 @@
-import Mathlib.Data.Nat.Basic
 import YulSemantics.BigStep
 import YulSemantics.Interp
 import YulSemantics.Dialect.EVM
@@ -743,7 +742,7 @@ theorem adequacy (hE : E.Lawful) {funs V st code res} :
   constructor
   · intro h
     obtain ⟨N, hN⟩ := complete hE h
-    exact ⟨N, hN N le_rfl⟩
+    exact ⟨N, hN N (Nat.le_refl N)⟩
   · rintro ⟨n, h⟩
     have S := sound_all hE n
     cases code with
@@ -776,7 +775,7 @@ theorem run_adequacy (hE : E.Lawful) {prog st0 V' st' o} :
   constructor
   · intro h
     obtain ⟨N, hN⟩ := complete hE h
-    have := hN N le_rfl
+    have := hN N (Nat.le_refl N)
     exact ⟨N, by simpa [InterpOk, Interp.run] using this⟩
   · rintro ⟨n, h⟩
     exact run_sound hE h

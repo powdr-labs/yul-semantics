@@ -1,22 +1,12 @@
-import Mathlib.Tactic.SplitIfs
 import YulSemantics.Dialect.EVMExec
 
 /-!
 # YulSemantics.Dialect.EVM
 
 The **metatheory** of the EVM dialect (effect-classification soundness, executable-dialect
-lawfulness, `@[simp]` state-helper lemmas, and worked examples). The Mathlib-free executable
+lawfulness, `@[simp]` state-helper lemmas, and worked examples). The dependency-free executable
 interpreter (`Op`, `stepOp`, the `evm` dialect instance, all state defs) lives in
-`YulSemantics.Dialect.EVMExec`; this module imports it and adds the proofs, keeping Mathlib off
-the import path of code that only needs to *run* the dialect.
-
-## Imports
-
-This module deliberately does **not** `import Mathlib`. Every Lean module's `initialize_*`
-function calls the initializer of each module it imports, and that is a genuine symbol
-reference the linker cannot discard — so a single bare `import Mathlib` anywhere in a
-downstream executable's import closure keeps all ~8200 Mathlib object files alive at link
-time. The only Mathlib entry point this file actually needs is the `split_ifs` tactic.
+`YulSemantics.Dialect.EVMExec`; this module imports it and adds the proofs.
 -/
 
 namespace YulSemantics.EVM
@@ -121,7 +111,7 @@ theorem effects_sound : evm.EffectsSound := by
       change stepOp _ args st2 = some (.ok rets2 st2') at h2
       rcases args with _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, args⟩⟩⟩⟩ <;>
         simp_all [stepOp, un, bin, ter, rd0, rd1, guardStatic] <;>
-        split_ifs at h1 h2 <;> simp_all
+        repeat1' (first | split at h1 | split at h2) <;> simp_all
   · intro op hw
     cases op <;> simp [effects] at hw
     all_goals
