@@ -1,16 +1,15 @@
-import Std.Tactic.BVDecide
-
 /-!
 # YulSemantics.Basic
 
-Confirms the toolchain is wired up and that the EVM word type `BitVec 256`
-(see `DESIGN.md` §4) is available with its bitvector automation.
+Defines the EVM word type `BitVec 256` (see `DESIGN.md` §4).
 
-This project does **not** depend on Mathlib. Every Lean module's `initialize_*` calls the
-initializer of each module it imports, so a bare `import Mathlib` anywhere in a downstream
-executable's import closure is a genuine symbol reference that keeps all ~8200 Mathlib object
-files alive at link time. `bv_decide` comes from `Std` (core); the only external dependency is
-Batteries, kept for the `lake lint` driver and the `nolint` attribute.
+This project does **not** depend on Mathlib — and, deliberately, no library module imports a
+*tactic* module (`Std.Tactic.*`, `Batteries.Tactic.*`) either. Every Lean module's `initialize_*`
+calls the initializer of each module it imports, so importing a tactic framework anywhere in an
+executable's import closure is a genuine symbol reference that links the whole elaborator
+(`libLean`) into the binary. Proof automation runs at proof-checking time; it does not need to be
+in the import graph. The only external dependency is Batteries, kept solely as the `lake lint`
+driver — nothing imports it.
 
 Module map:
 * `YulSemantics.Ast`     — AST + control-flow `Outcome`
@@ -24,8 +23,5 @@ namespace YulSemantics
 
 /-- The EVM-dialect value type: a 256-bit machine word (see `DESIGN.md` §4). -/
 abbrev Word := BitVec 256
-
-/-- Sanity check that `bv_decide`-style automation is available on `Word`. -/
-example (x : Word) : x + 0 = x := by bv_decide
 
 end YulSemantics

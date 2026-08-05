@@ -1,5 +1,4 @@
 import YulSemantics.Ast
-import Batteries.Tactic.Lint  -- for the `nolint` attribute and the `unusedArguments` linter
 
 /-!
 # YulSemantics.Dialect
@@ -82,10 +81,15 @@ structure Effects where
   writes : Bool
   /-- The built-in may halt execution instead of returning. -/
   halts  : Bool
-  deriving Repr, DecidableEq, Inhabited
+  deriving DecidableEq, Inhabited
 
--- The `prec` argument of the auto-derived pretty-printer is genuinely unused for this plain record.
-attribute [nolint unusedArguments] instReprEffects.repr
+-- Handwritten (not derived): the derived instance's unused `prec` argument trips the
+-- `unusedArguments` linter, and `@[nolint]` would drag `Batteries.Tactic.Lint` — and with it the
+-- whole elaborator — into every downstream executable (see `YulSemantics.Basic`).
+instance : Repr Effects where
+  reprPrec e _ :=
+    f!"\{ deterministic := {repr e.deterministic}, reads := {repr e.reads}, " ++
+    f!"writes := {repr e.writes}, halts := {repr e.halts} }"
 
 namespace Effects
 
