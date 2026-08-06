@@ -132,8 +132,9 @@ theorem effects_sound : evm.EffectsSound := by
 operations carry no determinism, non-writing, or non-halting promise (the call/create family is
 now marked `halts := true` to cover static-context write protection), so only the non-halting
 *local* built-ins remain to discharge; their `Builtin` is definitionally `stepOp`. -/
-theorem effects_sound_withExternal (calls : ExternalCalls) (creates : ExternalCreates) :
-    (evmWithExternal calls creates).EffectsSound := by
+theorem effects_sound_withExternal (calls : ExternalCalls) (creates : ExternalCreates)
+    (gasOracle : ExternalGas) :
+    (evmWithExternal calls creates gasOracle).EffectsSound := by
   refine ⟨?_, ?_, ?_, ?_⟩
   · intro op hd
     have hlocal := effects_sound.det op hd
@@ -176,7 +177,7 @@ theorem effects_sound_withExternal (calls : ExternalCalls) (creates : ExternalCr
 /-- Compatibility specialization for call-only clients. -/
 theorem effects_sound_withCalls (external : ExternalCalls) :
     (evmWithCalls external).EffectsSound :=
-  effects_sound_withExternal external ExternalCreates.none
+  effects_sound_withExternal external ExternalCreates.none ExternalGas.any
 
 example (x : U256) (st : EvmState) : stepOp .add [x, 0] st = some (.ok [x] st) := by simp [stepOp, bin]
 example (x : U256) (st : EvmState) : stepOp .mul [x, 1] st = some (.ok [x] st) := by simp [stepOp, bin]
@@ -250,10 +251,18 @@ example (external : ExternalCalls) (st : EvmState) (response : CallResponse)
   exact ⟨response, hresponse, rfl⟩
 
 example (external : ExternalCalls) (st : EvmState) (g : U256) :
-    (evmWithCalls external).Builtin .gas [] st (.ok [g] st) := ⟨g, rfl⟩
+    (evmWithCalls external).Builtin .gas [] st (.ok [g] st) := ⟨g, trivial, rfl⟩
 
+-- Under a general oracle, `gas()` may only report the words that oracle permits.
+example (calls : ExternalCalls) (creates : ExternalCreates) (gasOracle : ExternalGas)
+    (st : EvmState) (g : U256) (hg : gasOracle.Gas st g) :
+    (evmWithExternal calls creates gasOracle).Builtin .gas [] st (.ok [g] st) := ⟨g, hg, rfl⟩
+
+-- `ExternalGas.none` makes `gas()` stuck, exactly as `ExternalCalls.none` does for `call`.
 example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState) (g : U256) :
-    (evmWithExternal calls creates).Builtin .gas [] st (.ok [g] st) := ⟨g, rfl⟩
+    ¬ (evmWithExternal calls creates ExternalGas.none).Builtin .gas [] st (.ok [g] st) := by
+  rintro ⟨g', hg', -⟩
+  exact hg'
 
 example (st : EvmState) : stepOp .gas [] st = none := rfl
 
@@ -282,7 +291,7 @@ example (external : ExternalCalls) (st : EvmState) (g : U256) (response : CallRe
     (evmWithCalls external).Builtin .gas [] st (.ok [g] st) ∧
     (evmWithCalls external).Builtin .call [g, 2, 3, 0, 0, 0, 0] st
       (.ok [response.flag] (finishCall .call st response 0 0 0 0)) := by
-  refine ⟨⟨g, rfl⟩, ?_⟩
+  refine ⟨⟨g, trivial, rfl⟩, ?_⟩
   have hc : ¬ (st.env.static ∧ (3 : U256) ≠ 0) := by simp [hstatic]
   simp only [evmWithCalls, evmWithExternal, builtinWithExternal, if_neg hc]
   exact ⟨response, hresponse, rfl⟩
@@ -322,7 +331,7 @@ example (creates : ExternalCreates) (st : EvmState) (response : CreateResponse)
     (hstatic : st.env.static = false)
     (hresponse : creates.Create
       { kind := .create2, value := 7, initCode := [], salt := some 11 } st response) :
-    (evmWithExternal ExternalCalls.none creates).Builtin .create2 [7, 0, 0, 11] st
+    (evmWithExternal ExternalCalls.none creates ExternalGas.any).Builtin .create2 [7, 0, 0, 11] st
       (.ok [response.result] (finishCreate st response 0 0)) := by
   have hc : ¬ (st.env.static = true) := by simp [hstatic]
   simp only [evmWithExternal, builtinWithExternal, if_neg hc]
@@ -364,14 +373,14 @@ example (st : EvmState) (b : U256) (hstatic : st.env.static = true) :
 /-- A static frame's value-bearing `call` halts exceptionally under `builtinWithExternal`. -/
 example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState)
     (hstatic : st.env.static = true) :
-    builtinWithExternal calls creates .call [0, 0, 1, 0, 0, 0, 0] st
+    builtinWithExternal calls creates gasOracle .call [0, 0, 1, 0, 0, 0, 0] st
       (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [builtinWithExternal, hstatic]
 
 /-- A static frame's `create` halts exceptionally under `builtinWithExternal`. -/
 example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState)
     (hstatic : st.env.static = true) :
-    builtinWithExternal calls creates .create [0, 0, 0] st
+    builtinWithExternal calls creates gasOracle .create [0, 0, 0] st
       (.halt { st with halted := some (.staticViolation, []) }) := by
   simp [builtinWithExternal, hstatic]
 
@@ -381,7 +390,7 @@ example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState) (res
     (hresponse : calls.Call
       { kind := .call, gas := 1, target := 2, value := 0,
         input := readBytes st.memory 0 0 } st response) :
-    builtinWithExternal calls creates .call [1, 2, 0, 0, 0, 0, 0] st
+    builtinWithExternal calls creates gasOracle .call [1, 2, 0, 0, 0, 0, 0] st
       (.ok [response.flag] (finishCall .call st response 0 0 0 0)) := by
   simp only [builtinWithExternal, hstatic]
   refine ⟨response, hresponse, rfl⟩
@@ -393,7 +402,7 @@ example (calls : ExternalCalls) (creates : ExternalCreates) (st : EvmState) (res
     (hresponse : calls.Call
       { kind := .callcode, gas := 1, target := 2, value := 3,
         input := readBytes st.memory 0 0 } st response) :
-    builtinWithExternal calls creates .callcode [1, 2, 3, 0, 0, 0, 0] st
+    builtinWithExternal calls creates gasOracle .callcode [1, 2, 3, 0, 0, 0, 0] st
       (.ok [response.flag] (finishCall .callcode st response 0 0 0 0)) := by
   simp only [builtinWithExternal]
   refine ⟨response, hresponse, rfl⟩

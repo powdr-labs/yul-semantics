@@ -237,12 +237,19 @@ Two built-ins interact with gas and are classified as **impure / non-determinist
 do not model gas:
 
 - `gas()` returns *remaining* gas — a value that changes during execution. It is modeled as an
-  oracle / non-deterministic read (never a constant; two `gas()` calls may differ, so they cannot be
-  CSE'd). Concretely, the open-world dialects (`evmWithExternal`/`evmWithCalls`) interpret `gas()`
-  via `builtinWithExternal`: it returns an *arbitrary* word and leaves the state unchanged, so
-  `call(gas(), …)` — the idiomatic call pattern — is derivable. The executable reference dialect
-  `evm` has no oracle, so `gas()` stays stuck there (`stepOp .gas = none`); this is why `evm` is
-  deterministic while the open-world dialects are not.
+  oracle read (never a constant; two `gas()` calls may differ, so they cannot be CSE'd). Concretely,
+  `evmWithExternal calls creates gasOracle` interprets `gas()` via `builtinWithExternal`: it returns
+  a word the supplied `ExternalGas` oracle permits and leaves the state unchanged, so
+  `call(gas(), …)` — the idiomatic call pattern — is derivable. The oracle is a **parameter**, on
+  the same footing as `ExternalCalls`/`ExternalCreates`, for the same reason: what the environment
+  reports is not determined by the state this semantics tracks. `ExternalGas.any` is the maximally
+  open oracle (every word) and is what `evmWithCalls` installs, preserving the historical behavior;
+  `ExternalGas.none` leaves `gas()` stuck. A narrower oracle is what makes `gas()` *realizable* by a
+  concrete machine: a compiler forward simulation can only justify emitting the target's `GAS`
+  instruction when the source oracle is the one reporting exactly that machine's remaining gas —
+  with `ExternalGas.any` the source may pick a word the target will never produce. The executable
+  reference dialect `evm` has no oracle at all, so `gas()` stays stuck there (`stepOp .gas = none`);
+  this is why `evm` is deterministic while the open-world dialects are not.
 - gas forwarding + failure of `call`/`callcode`/`staticcall`/`delegatecall`: external call outcomes
   are modeled by the open-world relation (they can depend on out-of-gas in the callee, which a
   gas-free model cannot itself calculate).
