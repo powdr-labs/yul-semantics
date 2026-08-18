@@ -71,9 +71,9 @@ lake build
   observation boundary (only the outcome marker and exposed return data survive), while
   `stop`/`return`/`selfdestruct` and normal termination commit — matching real EVM. Applied by
   `EVM.committedState` and the observed whole-program run `EVM.RunCommitted` (functional given
-  determinism). This makes dead-effect reasoning sound: `EVM.deadStore_revert_obs_eq` proves a dead
-  store before a revert is observationally invisible — something the raw exact-state relations cannot
-  see.
+  determinism). This is what makes dead-effect reasoning sound — a dead store before a revert is
+  observationally invisible, something raw exact-state runs cannot see; that payoff is proven in the
+  compiler repository, whose optimizer owns the dead-effect reasoning.
 - **Effect classification** ([`Dialect.lean`](./YulSemantics/Dialect.lean)) — each built-in is
   classified (deterministic / reads / writes / halts). The EVM dialect proves the classification
   soundly over-approximates its semantics (`EVM.effects_sound`, and `EVM.effects_sound_withExternal`
@@ -83,25 +83,18 @@ lake build
   `code`/`data`/sub-objects): name resolution, a layout-consistency predicate relating a compiler's
   byte layout to an object, and a symbolic proof that the canonical constructor (`datacopy`/`return`)
   returns a data segment's bytes.
-- **Surface tooling** ([`Syntax.lean`](./YulSemantics/Syntax.lean),
-  [`PrettyPrint.lean`](./YulSemantics/PrettyPrint.lean)) — the `yul%` / `yulObject%` concrete-syntax
-  DSL and a pretty-printer.
-- **Optimization meta-theory** ([`Equiv.lean`](./YulSemantics/Equiv.lean),
-  [`Rewrites.lean`](./YulSemantics/Rewrites.lean)) — pointwise semantic equivalence for all five
-  syntactic classes, each proven an equivalence relation; congruence lemmas w.r.t. every AST
-  constructor (the workhorse for lifting local rewrites into any context); and worked sample rewrites
-  (constant folding, `add(x,0) ≈ x`).
+- **Surface tooling** ([`Syntax.lean`](./YulSemantics/Syntax.lean)) — the `yul%` / `yulObject%`
+  concrete-syntax DSL.
 
 ## What is not (yet) done, and why
 
 - **Yul→EVM compiler correctness.** Deliberately out of scope for this repo — it belongs to the
   separate compiler project, which will instantiate the abstract `Dialect` with the real EVM
   semantics and prove a conditional-on-gas forward simulation. See [`DESIGN.md`](./DESIGN.md).
-- **Inlining / function-body congruence.** Rewriting *inside* a function body changes the `FDecl`
-  that block-hoisting stores, so it needs a relation on function environments threaded through the
-  judgment. That machinery belongs with function-level optimizations (inlining) and is deferred; the
-  current block congruence carries an explicit `hoist`-agreement side condition (`rfl` for rewrites
-  that do not touch top-level `funDef`s).
+- **Optimization meta-theory.** The pointwise equivalences, congruence lemmas, sample rewrites, and
+  the pretty-printer for inspecting optimizer output live in the compiler repository, next to the
+  optimizer whose proof obligations they carry. This repo keeps only the semantics they are stated
+  against (`Step`/`Run`, the dialects, and the observation boundary).
 - **`reads`-flag soundness.** `EVM.effects_sound` proves the `deterministic`/`writes`/`halts` flags
   sound; a machine-checked soundness for `reads` needs a notion of state observation (a read
   footprint) and is deferred. The flag is documented and currently unused by any proof.
