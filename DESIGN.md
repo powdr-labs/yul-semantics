@@ -273,11 +273,11 @@ boundary instead of inside `Step`:
 - `EVM.RunCommitted prog st0 V' stObs o` is the observed whole-program run (`Run` followed by
   `committedState`); `RunCommitted.det` shows it is functional given `EVM.run_det`.
 
-This is what makes dead-effect reasoning sound at the frame level. The raw exact-state relations
-(`EquivStmt`/`EquivBlock`, which compare the full `Step` state) cannot equate a dead write before a
-revert with the bare revert, because they see the un-rolled-back write. Observed through
-`committedState` they *are* equal: `EVM.deadStore_revert_obs_eq` proves `{ sstore(0,1); revert(0,0) }`
-and `{ revert(0,0) }` have identical committed runs from every non-static initial state. (The
+This is what makes dead-effect reasoning sound at the frame level. Raw exact-state runs cannot
+equate a dead write before a revert with the bare revert, because they see the un-rolled-back
+write; observed through `committedState` they *are* equal. That payoff — `{ sstore(0,1);
+revert(0,0) }` and `{ revert(0,0) }` have identical committed runs from every non-static initial
+state — is proven in the compiler repository, whose optimizer owns the dead-effect reasoning. (The
 non-static condition is essential and faithful: under `STATICCALL` the `sstore` itself halts with
 `.staticViolation`, so the two programs genuinely differ.)
 
@@ -301,18 +301,8 @@ non-static condition is essential and faithful: under `STATICCALL` the `sstore` 
   `Interp.run_adequacy`, instantiated hypothesis-free for EVM as `EVM.run_adequacy`.
 - **Effect-classification soundness** (`EVM.effects_sound`, `EVM.effects_sound_withExternal`) — the
   `deterministic`/`writes`/`halts` flags are proven to over-approximate the built-in semantics.
-- **Optimization meta-theory** (`YulSemantics/Equiv.lean`, `YulSemantics/Rewrites.lean`). Pointwise
-  semantic equivalences for all five syntactic classes (`EquivExpr`/`EquivArgs`/`EquivStmt`/
-  `EquivStmts`/`EquivBlock`, each an equivalence relation); behavior (`EquivBlock.run_iff`);
-  **congruence lemmas** for built-in/user calls (argument lists via `Forall₂`),
-  `let`/`assign`/`exprStmt`/`cond`/`switch` (labels + case blocks + default) / `forLoop`
-  (cond/post/body), sequences, and blocks. Validated by sample EVM rewrites: constant folding
-  `add(2,3) ≈ 5`, the identity `add(x,0) ≈ x` (stated for a *variable* — `add(e,0) ≈ e` is false for
-  a multi-valued `e`, a real optimizer precondition surfaced by the proofs), and that identity lifted
-  through congruence to `sstore(0, add(x,0)) ≈ sstore(0, x)` at statement and whole-program (DSL)
-  level.
-- **Frame-boundary observation** (`YulSemantics/Observation.lean`) — `committedState`, `RunCommitted`
-  (functional via `RunCommitted.det`), and `deadStore_revert_obs_eq`.
+- **Frame-boundary observation** (`YulSemantics/Observation.lean`) — `committedState` and
+  `RunCommitted` (functional via `RunCommitted.det`).
 - **Objects** (`YulSemantics/Object.lean`, `YulSemantics/ObjectRun.lean`) — a layout-consistency
   predicate relating a compiler's byte layout to an object, and a symbolic proof that the canonical
   constructor (`datacopy`/`return`) returns a data segment's bytes.
@@ -333,12 +323,12 @@ calls/creations are outside the determinism and adequacy guarantees.
 
 - **Yul→EVM compiler correctness** — out of scope for this repo (it lives in the separate compiler
   project); the target is described under "Toward Yul→EVM compiler correctness" below.
-- **Inlining / function-body congruence.** There is no `funDef`-body congruence yet: rewriting inside
-  a function *body* changes the `FDecl` stored by block-hoisting, so relating the two programs needs a
-  relation on function environments ("environments with pointwise-equivalent bodies") threaded through
-  the judgment. That machinery belongs with function-level optimizations (inlining) and is deferred.
-  Relatedly, block congruence carries a `hoist`-agreement side condition (`rfl` for rewrites that do
-  not touch top-level `funDef` statements).
+- **Optimization meta-theory.** The pointwise semantic equivalences (`EquivExpr` … `EquivBlock`),
+  their congruence lemmas, and the sample rewrites validating them live in the compiler
+  repository, next to the optimizer whose proof obligations they carry (including its
+  `funDef`-body congruence). This repo keeps the semantics those results are stated against:
+  `Step`/`Run`, the dialects, the observation boundary, and the surface tooling (DSL and
+  pretty-printer).
 - **Account-map consistency.** The abstract world maps (`balanceOf`/`nonceOf`/`extCodeOf`/
   `extCodeHashOf`/`storageOf`) are independent; the intended cross-map invariants (e.g. `extcodehash`
   = keccak of code for non-empty accounts, zero for empty ones) are captured by an optional
