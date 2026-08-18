@@ -83,16 +83,17 @@ lake build
   `code`/`data`/sub-objects): name resolution, a layout-consistency predicate relating a compiler's
   byte layout to an object, and a symbolic proof that the canonical constructor (`datacopy`/`return`)
   returns a data segment's bytes.
-- **Surface tooling** ([`Syntax.lean`](./YulSemantics/Syntax.lean)) — the `yul%` / `yulObject%`
-  concrete-syntax DSL.
+- **Surface tooling** ([`Syntax.lean`](./YulSemantics/Syntax.lean),
+  [`PrettyPrint.lean`](./YulSemantics/PrettyPrint.lean)) — the `yul%` / `yulObject%` concrete-syntax
+  DSL and a pretty-printer.
 
 ## What is not (yet) done, and why
 
 - **Yul→EVM compiler correctness.** Deliberately out of scope for this repo — it belongs to the
   separate compiler project, which will instantiate the abstract `Dialect` with the real EVM
   semantics and prove a conditional-on-gas forward simulation. See [`DESIGN.md`](./DESIGN.md).
-- **Optimization meta-theory.** The pointwise equivalences, congruence lemmas, sample rewrites, and
-  the pretty-printer for inspecting optimizer output live in the compiler repository, next to the
+- **Optimization meta-theory.** The pointwise equivalences, congruence lemmas, and sample rewrites
+  live in the compiler repository, next to the
   optimizer whose proof obligations they carry. This repo keeps only the semantics they are stated
   against (`Step`/`Run`, the dialects, and the observation boundary).
 - **`reads`-flag soundness.** `EVM.effects_sound` proves the `deterministic`/`writes`/`halts` flags

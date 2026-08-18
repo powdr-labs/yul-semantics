@@ -324,10 +324,11 @@ calls/creations are outside the determinism and adequacy guarantees.
 - **Yul→EVM compiler correctness** — out of scope for this repo (it lives in the separate compiler
   project); the target is described under "Toward Yul→EVM compiler correctness" below.
 - **Optimization meta-theory.** The pointwise semantic equivalences (`EquivExpr` … `EquivBlock`),
-  their congruence lemmas, the sample rewrites validating them, and the pretty-printer for
-  inspecting optimizer output live in the compiler repository, next to the optimizer whose proof
-  obligations they carry (including its `funDef`-body congruence). This repo keeps the semantics
-  those results are stated against: `Step`/`Run`, the dialects, and the observation boundary.
+  their congruence lemmas, and the sample rewrites validating them live in the compiler
+  repository, next to the optimizer whose proof obligations they carry (including its
+  `funDef`-body congruence). This repo keeps the semantics those results are stated against:
+  `Step`/`Run`, the dialects, the observation boundary, and the surface tooling (DSL and
+  pretty-printer).
 - **Account-map consistency.** The abstract world maps (`balanceOf`/`nonceOf`/`extCodeOf`/
   `extCodeHashOf`/`storageOf`) are independent; the intended cross-map invariants (e.g. `extcodehash`
   = keccak of code for non-empty accounts, zero for empty ones) are captured by an optional
