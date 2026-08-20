@@ -167,6 +167,39 @@ theorem block {funs : FunEnv D} {body : Block D.Op}
 
 end StmtsContract
 
+/-! ### Loop invariants -/
+
+/-- Prove a normally terminating loop from a countdown invariant.  `Inv (n + 1)` must supply one
+successful condition/body/post iteration and re-establish `Inv n`; `Inv 0` must make the
+condition false.  Intermediate environments and states stay existential, which keeps clients
+from expanding exact machine states merely to compose iterations. -/
+theorem ExecLoop.countdown {funs : FunEnv D} {cond : Expr D.Op}
+    {post body : Block D.Op} {Inv : Nat → VEnv D → D.State → Prop}
+    (done : ∀ V st, Inv 0 V st →
+      ∃ cv st', EvalExpr D funs V st cond (.vals [cv] st') ∧
+        cv = D.zero ∧ Inv 0 V st')
+    (step : ∀ n V st, Inv (n + 1) V st →
+      ∃ cv stc Vb stb ob Vp stp,
+        EvalExpr D funs V st cond (.vals [cv] stc) ∧ cv ≠ D.zero ∧
+        ExecStmt D funs V stc (.block body) Vb stb ob ∧
+        (ob = .normal ∨ ob = .continue) ∧
+        ExecStmt D funs Vb stb (.block post) Vp stp .normal ∧
+        Inv n Vp stp) :
+    ∀ n V st, Inv n V st →
+      ∃ V' st', ExecLoop D funs V st cond post body V' st' .normal ∧ Inv 0 V' st' := by
+  intro n
+  induction n with
+  | zero =>
+      intro V st hInv
+      obtain ⟨cv, st', hcond, hz, hInv'⟩ := done V st hInv
+      exact ⟨V, st', Step.loopDone hcond hz, hInv'⟩
+  | succ n ih =>
+      intro V st hInv
+      obtain ⟨cv, stc, Vb, stb, ob, Vp, stp,
+        hcond, hnz, hbody, hob, hpost, hInv'⟩ := step n V st hInv
+      obtain ⟨V', st', hloop, hfinal⟩ := ih Vp stp hInv'
+      exact ⟨V', st', Step.loopStep hcond hnz hbody hob hpost hloop, hfinal⟩
+
 /-- View a statement-sequence contract for the top-level hoisted scope as a whole-program
 contract.  This is the final composition step used by source-level program proofs. -/
 theorem RunContract.of_stmts {program : Block D.Op} {pre : D.State → Prop}
