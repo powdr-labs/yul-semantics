@@ -74,6 +74,11 @@ lake build
   determinism). This is what makes dead-effect reasoning sound — a dead store before a revert is
   observationally invisible, something raw exact-state runs cannot see; that payoff is proven in the
   compiler repository, whose optimizer owns the dead-effect reasoning.
+- **Relational execution contracts** ([`Contract.lean`](./YulSemantics/Contract.lean)) —
+  `RunContract` hides complete final-state constructors behind source-level pre/postconditions.
+  Consequence, source-program transport, statement/sequence contracts, sequential composition, and
+  block lifting let proofs retain only the observations they need. The Fibonacci example exposes
+  its general correctness theorem as `fibRunContract` through this API.
 - **Effect classification** ([`Dialect.lean`](./YulSemantics/Dialect.lean)) — each built-in is
   classified (deterministic / reads / writes / halts). The EVM dialect proves the classification
   soundly over-approximates its semantics (`EVM.effects_sound`, and `EVM.effects_sound_withExternal`
@@ -99,8 +104,9 @@ lake build
 - **`reads`-flag soundness.** `EVM.effects_sound` proves the `deterministic`/`writes`/`halts` flags
   sound; a machine-checked soundness for `reads` needs a notion of state observation (a read
   footprint) and is deferred. The flag is documented and currently unused by any proof.
-- **Program logic (Hoare / separation).** An optional layer on top of the relational semantics;
-  deferred until needed. Not required for the equivalence/simulation results.
+- **Separation logic and automated framing.** `RunContract` provides a small relational Hoare layer,
+  but it deliberately does not prescribe a heap assertion language or automate disjoint-memory
+  framing. Those can be layered on top when a client needs them.
 - **Divergence reasoning.** Not needed for the main compiler theorem (the gas-metered target cannot
   diverge), and deferred indefinitely.
 - **Gas.** Not modeled by design (see [`DESIGN.md`](./DESIGN.md) §1). Within-frame out-of-gas is

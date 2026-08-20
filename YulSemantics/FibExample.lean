@@ -1,6 +1,7 @@
 import YulSemantics.Interp
 import YulSemantics.Syntax
 import YulSemantics.BigStep
+import YulSemantics.Contract
 
 /-!
 # YulSemantics.FibExample
@@ -226,5 +227,17 @@ theorem fibContract_correct (st0 : EvmState) :
       (Step.argsCons (Step.argsCons Step.argsNil Step.lit) Step.lit) rfl)) (by decide)
   refine ⟨_, Step.block hstmts, ?_⟩
   simp only [readBytes_storeWord]
+
+/-- The same result exposed through the proof-facing relational contract API. Consumers can use
+the returned-byte property without naming the concrete final `EvmState` constructed above. -/
+theorem fibRunContract :
+    RunContract (D := evm) fibContract (fun _ => True)
+      (fun initial _ final outcome =>
+        outcome = .halt ∧
+        final.halted = some (.ret,
+          wordBytes (BitVec.ofNat 256 (fib (wordFrom initial.env.calldata 0).toNat)))) := by
+  intro initial _
+  obtain ⟨final, hrun, hhalt⟩ := fibContract_correct initial
+  exact ⟨[], final, .halt, hrun, rfl, hhalt⟩
 
 end YulSemantics.FibExample

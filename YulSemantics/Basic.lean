@@ -15,6 +15,7 @@ Module map:
 * `YulSemantics.Ast`     — AST + control-flow `Outcome`
 * `YulSemantics.Dialect` — abstract `Dialect` + EVM dialect instance
 * `YulSemantics.BigStep` — big-step relational semantics, the ground truth
+* `YulSemantics.Contract` — compositional, proof-facing relational contracts
 * `YulSemantics.Syntax`  — concrete-syntax Yul DSL
 * `YulSemantics.Equiv`   — behavior, contextual equivalence, congruence
 -/
