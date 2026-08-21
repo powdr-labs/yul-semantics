@@ -102,6 +102,7 @@ namespace SyntaxEq
 variable {Op : Type} [BEq Op]
 
 mutual
+/-- Executable structural equality for Yul expressions. -/
 def exprBeq : Expr Op → Expr Op → Bool
   | .lit left, .lit right => left == right
   | .var left, .var right => left == right
@@ -111,6 +112,7 @@ def exprBeq : Expr Op → Expr Op → Bool
       leftName == rightName && exprsBeq leftArgs rightArgs
   | _, _ => false
 
+/-- Executable structural equality for expression lists. -/
 def exprsBeq : List (Expr Op) → List (Expr Op) → Bool
   | [], [] => true
   | left :: leftRest, right :: rightRest =>
@@ -118,12 +120,14 @@ def exprsBeq : List (Expr Op) → List (Expr Op) → Bool
   | _, _ => false
 end
 
+/-- Executable structural equality for optional expressions. -/
 def optionalExprBeq : Option (Expr Op) → Option (Expr Op) → Bool
   | none, none => true
   | some left, some right => exprBeq left right
   | _, _ => false
 
 mutual
+/-- Executable structural equality for Yul statements. -/
 def stmtBeq : Stmt Op → Stmt Op → Bool
   | .block left, .block right => stmtsBeq left right
   | .funDef ln lp lr lb, .funDef rn rp rr rb =>
@@ -139,12 +143,14 @@ def stmtBeq : Stmt Op → Stmt Op → Bool
   | .break, .break | .continue, .continue | .leave, .leave => true
   | _, _ => false
 
+/-- Executable structural equality for statement lists (and hence blocks). -/
 def stmtsBeq : List (Stmt Op) → List (Stmt Op) → Bool
   | [], [] => true
   | left :: leftRest, right :: rightRest =>
       stmtBeq left right && stmtsBeq leftRest rightRest
   | _, _ => false
 
+/-- Executable structural equality for switch-case lists. -/
 def casesBeq : List (Literal × Block Op) → List (Literal × Block Op) → Bool
   | [], [] => true
   | (leftLit, leftBody) :: leftRest, (rightLit, rightBody) :: rightRest =>
@@ -152,6 +158,7 @@ def casesBeq : List (Literal × Block Op) → List (Literal × Block Op) → Boo
         casesBeq leftRest rightRest
   | _, _ => false
 
+/-- Executable structural equality for optional statement blocks. -/
 def optionalStmtsBeq : Option (Block Op) → Option (Block Op) → Bool
   | none, none => true
   | some left, some right => stmtsBeq left right
