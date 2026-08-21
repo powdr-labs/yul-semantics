@@ -47,8 +47,8 @@ inductive Literal
 * `builtin op args` — a call to the dialect built-in `op`;
 * `call fn args` — a call to the *user-defined* function named `fn`.
 
-`DecidableEq`/`BEq` are intentionally not derived (the deriving handlers do not support recursion
-through `List`); syntactic equality is first needed for the optimization proofs. -/
+Syntactic equality is executable, which lets clients certify that a concrete
+parser result is the same readable AST used by a proof. -/
 inductive Expr (Op : Type)
   | lit     (l : Literal)
   | var     (x : Ident)
@@ -88,6 +88,233 @@ inductive Stmt (Op : Type)
 
 /-- A block is a sequence of statements. -/
 abbrev Block (Op : Type) := List (Stmt Op)
+
+/-! ### Executable syntactic equality
+
+The standard deriving handlers cannot construct equality through the mutually
+recursive `List` occurrences in this AST.  These small boolean comparators are
+the executable substitute.  Their one-way soundness theorems below are enough
+to turn a native check of a concrete parser result into propositional equality.
+-/
+
+namespace SyntaxEq
+
+variable {Op : Type} [BEq Op]
+
+mutual
+/-- Executable structural equality for Yul expressions. -/
+def exprBeq : Expr Op → Expr Op → Bool
+  | .lit left, .lit right => left == right
+  | .var left, .var right => left == right
+  | .builtin leftOp leftArgs, .builtin rightOp rightArgs =>
+      leftOp == rightOp && exprsBeq leftArgs rightArgs
+  | .call leftName leftArgs, .call rightName rightArgs =>
+      leftName == rightName && exprsBeq leftArgs rightArgs
+  | _, _ => false
+
+/-- Executable structural equality for expression lists. -/
+def exprsBeq : List (Expr Op) → List (Expr Op) → Bool
+  | [], [] => true
+  | left :: leftRest, right :: rightRest =>
+      exprBeq left right && exprsBeq leftRest rightRest
+  | _, _ => false
+end
+
+/-- Executable structural equality for optional expressions. -/
+def optionalExprBeq : Option (Expr Op) → Option (Expr Op) → Bool
+  | none, none => true
+  | some left, some right => exprBeq left right
+  | _, _ => false
+
+mutual
+/-- Executable structural equality for Yul statements. -/
+def stmtBeq : Stmt Op → Stmt Op → Bool
+  | .block left, .block right => stmtsBeq left right
+  | .funDef ln lp lr lb, .funDef rn rp rr rb =>
+      ln == rn && lp == rp && lr == rr && stmtsBeq lb rb
+  | .letDecl lv le, .letDecl rv re => lv == rv && optionalExprBeq le re
+  | .assign lv le, .assign rv re => lv == rv && exprBeq le re
+  | .cond le lb, .cond re rb => exprBeq le re && stmtsBeq lb rb
+  | .switch le lc ld, .switch re rc rd =>
+      exprBeq le re && casesBeq lc rc && optionalStmtsBeq ld rd
+  | .forLoop li lc lp lb, .forLoop ri rc rp rb =>
+      stmtsBeq li ri && exprBeq lc rc && stmtsBeq lp rp && stmtsBeq lb rb
+  | .exprStmt left, .exprStmt right => exprBeq left right
+  | .break, .break | .continue, .continue | .leave, .leave => true
+  | _, _ => false
+
+/-- Executable structural equality for statement lists (and hence blocks). -/
+def stmtsBeq : List (Stmt Op) → List (Stmt Op) → Bool
+  | [], [] => true
+  | left :: leftRest, right :: rightRest =>
+      stmtBeq left right && stmtsBeq leftRest rightRest
+  | _, _ => false
+
+/-- Executable structural equality for switch-case lists. -/
+def casesBeq : List (Literal × Block Op) → List (Literal × Block Op) → Bool
+  | [], [] => true
+  | (leftLit, leftBody) :: leftRest, (rightLit, rightBody) :: rightRest =>
+      leftLit == rightLit && stmtsBeq leftBody rightBody &&
+        casesBeq leftRest rightRest
+  | _, _ => false
+
+/-- Executable structural equality for optional statement blocks. -/
+def optionalStmtsBeq : Option (Block Op) → Option (Block Op) → Bool
+  | none, none => true
+  | some left, some right => stmtsBeq left right
+  | _, _ => false
+end
+
+section Soundness
+
+variable [LawfulBEq Op]
+
+set_option linter.unusedSectionVars false in
+mutual
+theorem exprBeq_eq : ∀ (left right : Expr Op),
+    exprBeq left right = true → left = right
+  | .lit left, right, h => by
+      cases right with
+      | lit right => exact congrArg Expr.lit (eq_of_beq h)
+      | var | builtin | call => exact Bool.noConfusion h
+  | .var left, right, h => by
+      cases right with
+      | var right => exact congrArg Expr.var (eq_of_beq h)
+      | lit | builtin | call => exact Bool.noConfusion h
+  | .builtin leftOp leftArgs, right, h => by
+      cases right with
+      | builtin rightOp rightArgs =>
+          simp only [exprBeq, Bool.and_eq_true, beq_iff_eq] at h
+          rw [h.1, exprsBeq_eq leftArgs rightArgs h.2]
+      | lit | var | call => exact Bool.noConfusion h
+  | .call leftName leftArgs, right, h => by
+      cases right with
+      | call rightName rightArgs =>
+          simp only [exprBeq, Bool.and_eq_true, beq_iff_eq] at h
+          rw [h.1, exprsBeq_eq leftArgs rightArgs h.2]
+      | lit | var | builtin => exact Bool.noConfusion h
+
+theorem exprsBeq_eq : ∀ (left right : List (Expr Op)),
+    exprsBeq left right = true → left = right
+  | [], [], _ => rfl
+  | left :: leftRest, right :: rightRest, h => by
+      simp only [exprsBeq, Bool.and_eq_true] at h
+      rw [exprBeq_eq left right h.1, exprsBeq_eq leftRest rightRest h.2]
+  | [], _ :: _, h | _ :: _, [], h => Bool.noConfusion h
+end
+
+theorem optionalExprBeq_eq : ∀ (left right : Option (Expr Op)),
+    optionalExprBeq left right = true → left = right
+  | none, none, _ => rfl
+  | some left, some right, h => congrArg some (exprBeq_eq left right h)
+  | none, some _, h | some _, none, h => absurd h Bool.false_ne_true
+
+set_option linter.unusedSectionVars false in
+mutual
+theorem stmtBeq_eq : ∀ (left right : Stmt Op),
+    stmtBeq left right = true → left = right
+  | .block left, right, h => by
+      cases right with
+      | block right =>
+          exact congrArg Stmt.block (stmtsBeq_eq left right (by simpa only [stmtBeq] using h))
+      | funDef | letDecl | assign | cond | switch | forLoop | exprStmt |
+          «break» | «continue» | leave => simp [stmtBeq] at h
+  | .funDef ln lp lr lb, right, h => by
+      cases right with
+      | funDef rn rp rr rb =>
+          simp only [stmtBeq, Bool.and_eq_true, beq_iff_eq] at h
+          rw [h.1.1.1, h.1.1.2, h.1.2, stmtsBeq_eq lb rb h.2]
+      | block | letDecl | assign | cond | switch | forLoop | exprStmt |
+          «break» | «continue» | leave => simp [stmtBeq] at h
+  | .letDecl lv le, right, h => by
+      cases right with
+      | letDecl rv re =>
+          simp only [stmtBeq, Bool.and_eq_true, beq_iff_eq] at h
+          rw [h.1, optionalExprBeq_eq le re h.2]
+      | block | funDef | assign | cond | switch | forLoop | exprStmt |
+          «break» | «continue» | leave => simp [stmtBeq] at h
+  | .assign lv le, right, h => by
+      cases right with
+      | assign rv re =>
+          simp only [stmtBeq, Bool.and_eq_true, beq_iff_eq] at h
+          rw [h.1, exprBeq_eq le re h.2]
+      | block | funDef | letDecl | cond | switch | forLoop | exprStmt |
+          «break» | «continue» | leave => simp [stmtBeq] at h
+  | .cond le lb, right, h => by
+      cases right with
+      | cond re rb =>
+          simp only [stmtBeq, Bool.and_eq_true] at h
+          rw [exprBeq_eq le re h.1, stmtsBeq_eq lb rb h.2]
+      | block | funDef | letDecl | assign | switch | forLoop | exprStmt |
+          «break» | «continue» | leave => simp [stmtBeq] at h
+  | .switch le lc ld, right, h => by
+      cases right with
+      | switch re rc rd =>
+          simp only [stmtBeq, Bool.and_eq_true] at h
+          rw [exprBeq_eq le re h.1.1, casesBeq_eq lc rc h.1.2,
+            optionalStmtsBeq_eq ld rd h.2]
+      | block | funDef | letDecl | assign | cond | forLoop | exprStmt |
+          «break» | «continue» | leave => simp [stmtBeq] at h
+  | .forLoop li lc lp lb, right, h => by
+      cases right with
+      | forLoop ri rc rp rb =>
+          simp only [stmtBeq, Bool.and_eq_true] at h
+          rw [stmtsBeq_eq li ri h.1.1.1, exprBeq_eq lc rc h.1.1.2,
+            stmtsBeq_eq lp rp h.1.2, stmtsBeq_eq lb rb h.2]
+      | block | funDef | letDecl | assign | cond | switch | exprStmt |
+          «break» | «continue» | leave => simp [stmtBeq] at h
+  | .exprStmt left, right, h => by
+      cases right with
+      | exprStmt right =>
+          exact congrArg Stmt.exprStmt (exprBeq_eq left right (by simpa only [stmtBeq] using h))
+      | block | funDef | letDecl | assign | cond | switch | forLoop |
+          «break» | «continue» | leave => simp [stmtBeq] at h
+  | .break, right, h => by
+      cases right with
+      | «break» => rfl
+      | block | funDef | letDecl | assign | cond | switch | forLoop | exprStmt |
+          «continue» | leave => simp [stmtBeq] at h
+  | .continue, right, h => by
+      cases right with
+      | «continue» => rfl
+      | block | funDef | letDecl | assign | cond | switch | forLoop | exprStmt |
+          «break» | leave => simp [stmtBeq] at h
+  | .leave, right, h => by
+      cases right with
+      | leave => rfl
+      | block | funDef | letDecl | assign | cond | switch | forLoop | exprStmt |
+          «break» | «continue» => simp [stmtBeq] at h
+
+theorem stmtsBeq_eq : ∀ (left right : List (Stmt Op)),
+    stmtsBeq left right = true → left = right
+  | [], [], _ => rfl
+  | left :: leftRest, right :: rightRest, h => by
+      simp only [stmtsBeq, Bool.and_eq_true] at h
+      rw [stmtBeq_eq left right h.1, stmtsBeq_eq leftRest rightRest h.2]
+  | [], _ :: _, h | _ :: _, [], h => by simp [stmtsBeq] at h
+
+theorem casesBeq_eq : ∀ (left right : List (Literal × Block Op)),
+    casesBeq left right = true → left = right
+  | [], [], _ => rfl
+  | (leftLit, leftBody) :: leftRest,
+      (rightLit, rightBody) :: rightRest, h => by
+      simp only [casesBeq, Bool.and_eq_true, beq_iff_eq] at h
+      rw [h.1.1, stmtsBeq_eq leftBody rightBody h.1.2,
+        casesBeq_eq leftRest rightRest h.2]
+  | [], _ :: _, h | _ :: _, [], h => by simp [casesBeq] at h
+
+theorem optionalStmtsBeq_eq : ∀ (left right : Option (Block Op)),
+    optionalStmtsBeq left right = true → left = right
+  | none, none, _ => rfl
+  | some left, some right, h => by
+      simp only [optionalStmtsBeq] at h
+      exact congrArg some (stmtsBeq_eq left right h)
+  | none, some _, h | some _, none, h => by simp [optionalStmtsBeq] at h
+end
+
+end Soundness
+
+end SyntaxEq
 
 /-- The contents of a `data` segment of an object: raw bytes, written as a hex or string literal. -/
 inductive Data

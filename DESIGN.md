@@ -281,6 +281,16 @@ state — is proven in the compiler repository, whose optimizer owns the dead-ef
 non-static condition is essential and faithful: under `STATICCALL` the `sstore` itself halts with
 `.staticViolation`, so the two programs genuinely differ.)
 
+### Proof-facing relational contracts
+
+`Run` remains the authoritative exact execution judgment. `RunContract program pre post` packages
+an existential `Run` together with a relation-valued postcondition, so downstream theorems can
+retain only selected observations of the final environment, state, and outcome. The generic layer
+in `YulSemantics/Contract.lean` also provides statement and statement-sequence contracts,
+consequence, source-program transport, sequential composition, and lexical-block lifting. It does
+not change state representation or commit/rollback behavior: `RunContract` and `RunCommitted` are
+orthogonal boundaries for proof composition and frame observation respectively.
+
 ## What is proven
 
 - **Determinism** (`YulSemantics/Determinism.lean`). `Step.det` by a single rule induction, given
@@ -303,6 +313,8 @@ non-static condition is essential and faithful: under `STATICCALL` the `sstore` 
   `deterministic`/`writes`/`halts` flags are proven to over-approximate the built-in semantics.
 - **Frame-boundary observation** (`YulSemantics/Observation.lean`) — `committedState` and
   `RunCommitted` (functional via `RunCommitted.det`).
+- **Relational contracts** (`YulSemantics/Contract.lean`) — whole-program, statement, and sequence
+  contracts with consequence, program transport, sequential composition, and block lifting.
 - **Objects** (`YulSemantics/Object.lean`, `YulSemantics/ObjectRun.lean`) — a layout-consistency
   predicate relating a compiler's byte layout to an object, and a symbolic proof that the canonical
   constructor (`datacopy`/`return`) returns a data segment's bytes.
